@@ -12,7 +12,7 @@ import (
 const MarketChannel = "market"
 const UserChannel = "user"
 
-type WSMessageCallback func(message string)
+type WSMessageCallback func(message []byte)
 
 type WebSocketOrderBook struct {
 	channelType     string
@@ -58,7 +58,7 @@ func (w *WebSocketOrderBook) Run(send map[string]any) error {
 		}
 
 		if w.messageCallback != nil {
-			w.messageCallback(string(message))
+			w.messageCallback(message)
 		}
 	}
 }

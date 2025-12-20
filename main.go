@@ -13,8 +13,6 @@ const (
 	LookAhead = 1
 )
 
-var orderBook map[string]*OrderBook
-
 func run(market string) {
 	gamma := polymarket.NewGammaMarket()
 	client, err := NewPolymarketClient()
@@ -27,15 +25,14 @@ func run(market string) {
 
 	userWS := polymarket.NewWebSocketOrderBook(
 		polymarket.UserChannel,
-		func(msg string) {
-			//log.Println(msg)
+		func(msg []byte) {
 		},
 	)
 
 	marketWS := polymarket.NewWebSocketOrderBook(
 		polymarket.MarketChannel,
-		func(msg string) {
-			updateOrderBook(msg)
+		func(msg []byte) {
+			UpdateOrderBook(msg)
 		},
 	)
 
@@ -49,6 +46,8 @@ func run(market string) {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		PrintOrderBook()
+
 		newTokenIDs := make([]string, 0, LookAhead*2)
 
 		for i := 0; i < LookAhead; i++ {
@@ -92,12 +91,9 @@ func run(market string) {
 				log.Println("Error unsubscribing to token IDs", err, unsubscribeList)
 			}
 			subscribedList = subscribedList[len(subscribedList)-LookAhead*2:]
+			DeleteOrderBook(unsubscribeList)
 		}
 	}
-}
-
-func updateOrderBook(message string) {
-
 }
 
 func main() {
