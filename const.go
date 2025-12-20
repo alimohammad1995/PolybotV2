@@ -1,0 +1,12 @@
+package main
+
+const (
+	IntervalSeconds = 900
+)
+
+const (
+	EthMarketName = "eth-updown-15m-"
+	BtcMarketName = "btc-updown-15m-"
+	SolMarketName = "sol-updown-15m-"
+	XrpMarketName = "xrp-updown-15m-"
+)

@@ -1,0 +1,429 @@
+package polymarket
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+type ClobClient struct {
+	host      string
+	chainID   int
+	signer    *Signer
+	creds     *ApiCreds
+	mode      int
+	builder   *OrderBuilder
+	http      *HTTPClient
+	tickSizes map[string]string
+	negRisk   map[string]bool
+	feeRates  map[string]int
+}
+
+func NewClobClient(key string, signatureType uint8, funder string) (*ClobClient, error) {
+	trimmedHost := strings.TrimRight(CLOBEndpoint, "/")
+	var signer *Signer
+	var err error
+	if key != "" {
+		signer, err = NewSigner(key, POLYGON)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	client := &ClobClient{
+		host:      trimmedHost,
+		chainID:   POLYGON,
+		signer:    signer,
+		mode:      L0,
+		http:      NewHTTPClient(20 * time.Second),
+		tickSizes: map[string]string{},
+		negRisk:   map[string]bool{},
+		feeRates:  map[string]int{},
+	}
+
+	if signer != nil {
+		client.builder = NewOrderBuilder(signer, signatureType, funder)
+		client.mode = L1
+	}
+
+	return client, nil
+}
+
+func (c *ClobClient) SetAPICreds(creds *ApiCreds) {
+	c.creds = creds
+	if c.signer != nil {
+		c.mode = L2
+	}
+}
+
+func (c *ClobClient) Address() string {
+	if c.signer == nil {
+		return ""
+	}
+	return c.signer.Address()
+}
+
+func (c *ClobClient) GetServerTime() (any, error) {
+	return c.http.Request("GET", c.host+TimeEndpoint, nil, nil)
+}
+
+func (c *ClobClient) CreateAPIKey(nonce int64) (*ApiCreds, error) {
+	if err := c.assertLevel1(); err != nil {
+		return nil, err
+	}
+	headers, err := CreateLevel1Headers(c.signer, nonce)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Request("POST", c.host+CreateAPIKeyEndpoint, headers, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseCreds(resp)
+}
+
+func (c *ClobClient) DeriveAPIKey(nonce int64) (*ApiCreds, error) {
+	if err := c.assertLevel1(); err != nil {
+		return nil, err
+	}
+	headers, err := CreateLevel1Headers(c.signer, nonce)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Request("GET", c.host+DeriveAPIKeyEndpoint, headers, nil)
+	if err != nil {
+		return nil, err
+	}
+	return parseCreds(resp)
+}
+
+func (c *ClobClient) CreateOrDeriveAPICreds(nonce int64) (*ApiCreds, error) {
+	creds, err := c.CreateAPIKey(nonce)
+	if err == nil {
+		return creds, nil
+	}
+	return c.DeriveAPIKey(nonce)
+}
+
+func (c *ClobClient) GetMarket(conditionID string) (any, error) {
+	return c.http.Request("GET", c.host+GetMarketEndpoint+conditionID, nil, nil)
+}
+
+func (c *ClobClient) GetMarkets(nextCursor string) (any, error) {
+	if nextCursor == "" {
+		nextCursor = "MA=="
+	}
+	return c.http.Request("GET", fmt.Sprintf("%s%s?next_cursor=%s", c.host, GetMarketsEndpoint, nextCursor), nil, nil)
+}
+
+func (c *ClobClient) GetOrderBook(tokenID string) (OrderBookSummary, error) {
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetOrderBookEndpoint, tokenID), nil, nil)
+	if err != nil {
+		return OrderBookSummary{}, err
+	}
+	raw, ok := resp.(map[string]any)
+	if !ok {
+		return OrderBookSummary{}, errors.New("invalid orderbook response")
+	}
+	return ParseOrderBookSummary(raw), nil
+}
+
+func (c *ClobClient) GetOrderBooks(tokenIDs []string) (map[string]OrderBookSummary, error) {
+	body := make([]map[string]string, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		body = append(body, map[string]string{"token_id": tokenID})
+	}
+	resp, err := c.http.Request("POST", c.host+GetOrderBooksEndpoint, nil, body)
+	if err != nil {
+		return nil, err
+	}
+	rawList, ok := resp.([]any)
+	if !ok {
+		return nil, errors.New("invalid order books response")
+	}
+	books := make(map[string]OrderBookSummary, len(rawList))
+	for _, item := range rawList {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("invalid order book entry")
+		}
+		book := ParseOrderBookSummary(raw)
+		books[book.AssetID] = book
+	}
+	return books, nil
+}
+
+func (c *ClobClient) GetTickSize(tokenID string) (string, error) {
+	if val, ok := c.tickSizes[tokenID]; ok {
+		return val, nil
+	}
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetTickSizeEndpoint, tokenID), nil, nil)
+	if err != nil {
+		return "", err
+	}
+	result, ok := resp.(map[string]any)
+	if !ok {
+		return "", errors.New("invalid tick size response")
+	}
+	value := fmt.Sprintf("%v", result["minimum_tick_size"])
+	c.tickSizes[tokenID] = value
+	return value, nil
+}
+
+func (c *ClobClient) GetNegRisk(tokenID string) (bool, error) {
+	if val, ok := c.negRisk[tokenID]; ok {
+		return val, nil
+	}
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetNegRiskEndpoint, tokenID), nil, nil)
+	if err != nil {
+		return false, err
+	}
+	result, ok := resp.(map[string]any)
+	if !ok {
+		return false, errors.New("invalid neg risk response")
+	}
+	value := toBool(result["neg_risk"])
+	c.negRisk[tokenID] = value
+	return value, nil
+}
+
+func (c *ClobClient) GetFeeRateBps(tokenID string) (int, error) {
+	if val, ok := c.feeRates[tokenID]; ok {
+		return val, nil
+	}
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetFeeRateEndpoint, tokenID), nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	result, ok := resp.(map[string]any)
+	if !ok {
+		return 0, errors.New("invalid fee rate response")
+	}
+	baseFee := 0
+	if val, ok := result["base_fee"]; ok {
+		switch v := val.(type) {
+		case float64:
+			baseFee = int(v)
+		case int:
+			baseFee = v
+		case json.Number:
+			parsed, _ := v.Int64()
+			baseFee = int(parsed)
+		}
+	}
+	c.feeRates[tokenID] = baseFee
+	return baseFee, nil
+}
+
+func (c *ClobClient) CreateOrder(orderArgs OrderArgs, options *PartialCreateOrderOptions) (SignedOrder, error) {
+	if err := c.assertLevel1(); err != nil {
+		return SignedOrder{}, err
+	}
+	if orderArgs.Taker == "" {
+		orderArgs.Taker = ZeroAddress
+	}
+
+	tickSize, err := c.resolveTickSize(orderArgs.TokenID, options)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+	if !PriceValid(orderArgs.Price, tickSize) {
+		return SignedOrder{}, fmt.Errorf("price (%f), min: %s - max: %f", orderArgs.Price, tickSize, 1-parseFloatDefault(tickSize))
+	}
+
+	negRisk, err := c.resolveNegRisk(orderArgs.TokenID, options)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+
+	feeRate, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+	orderArgs.FeeRateBps = feeRate
+
+	return c.builder.CreateOrder(orderArgs, CreateOrderOptions{TickSize: tickSize, NegRisk: negRisk})
+}
+
+func (c *ClobClient) CreateMarketOrder(orderArgs MarketOrderArgs, options *PartialCreateOrderOptions) (SignedOrder, error) {
+	if err := c.assertLevel1(); err != nil {
+		return SignedOrder{}, err
+	}
+	if orderArgs.Taker == "" {
+		orderArgs.Taker = ZeroAddress
+	}
+	if orderArgs.OrderType == "" {
+		orderArgs.OrderType = OrderTypeFOK
+	}
+
+	tickSize, err := c.resolveTickSize(orderArgs.TokenID, options)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+
+	if orderArgs.Price <= 0 {
+		orderArgs.Price, err = c.CalculateMarketPrice(orderArgs.TokenID, orderArgs.Side, orderArgs.Amount, orderArgs.OrderType)
+		if err != nil {
+			return SignedOrder{}, err
+		}
+	}
+	if !PriceValid(orderArgs.Price, tickSize) {
+		return SignedOrder{}, fmt.Errorf("price (%f), min: %s - max: %f", orderArgs.Price, tickSize, 1-parseFloatDefault(tickSize))
+	}
+
+	negRisk, err := c.resolveNegRisk(orderArgs.TokenID, options)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+
+	feeRate, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
+	if err != nil {
+		return SignedOrder{}, err
+	}
+	orderArgs.FeeRateBps = feeRate
+
+	return c.builder.CreateMarketOrder(orderArgs, CreateOrderOptions{TickSize: tickSize, NegRisk: negRisk})
+}
+
+func (c *ClobClient) PostOrder(order SignedOrder, orderType OrderType) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	if orderType == "" {
+		orderType = OrderTypeGTC
+	}
+	body := map[string]any{
+		"order":     order.ToJSONMap(),
+		"owner":     c.creds.APIKey,
+		"orderType": orderType,
+	}
+	serialized, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	reqArgs := RequestArgs{Method: "POST", RequestPath: PostOrderEndpoint, Body: body, SerializedBody: string(serialized)}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("POST", c.host+PostOrderEndpoint, headers, reqArgs.SerializedBody)
+}
+
+func (c *ClobClient) CancelAllOrders() (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	reqArgs := RequestArgs{Method: "DELETE", RequestPath: CancelAllEndpoint, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("DELETE", c.host+CancelAllEndpoint, headers, nil)
+}
+
+func (c *ClobClient) CancelMarketOrders(tokenID string) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	if tokenID == "" {
+		return nil, errors.New("token id is required")
+	}
+	body := map[string]any{"token_id": tokenID}
+	serialized, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	reqArgs := RequestArgs{Method: "POST", RequestPath: CancelMarketOrdersEndpoint, Body: body, SerializedBody: string(serialized)}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("POST", c.host+CancelMarketOrdersEndpoint, headers, reqArgs.SerializedBody)
+}
+
+func (c *ClobClient) CalculateMarketPrice(tokenID string, side OrderSide, amount float64, orderType OrderType) (float64, error) {
+	book, err := c.GetOrderBook(tokenID)
+	if err != nil {
+		return 0, err
+	}
+	if side == SideBuy {
+		if len(book.Asks) == 0 {
+			return 0, errors.New("no match")
+		}
+		return c.builder.CalculateBuyMarketPrice(book.Asks, amount, orderType)
+	}
+	if len(book.Bids) == 0 {
+		return 0, errors.New("no match")
+	}
+	return c.builder.CalculateSellMarketPrice(book.Bids, amount, orderType)
+}
+
+func (c *ClobClient) assertLevel1() error {
+	if c.mode < L1 || c.signer == nil {
+		return ErrLevel1Auth
+	}
+	return nil
+}
+
+func (c *ClobClient) assertLevel2() error {
+	if c.mode < L2 || c.signer == nil || c.creds == nil {
+		return ErrLevel2Auth
+	}
+	return nil
+}
+
+func (c *ClobClient) resolveTickSize(tokenID string, options *PartialCreateOrderOptions) (string, error) {
+	minTickSize, err := c.GetTickSize(tokenID)
+	if err != nil {
+		return "", err
+	}
+	if options != nil && options.TickSize != "" {
+		if IsTickSizeSmaller(options.TickSize, minTickSize) {
+			return "", fmt.Errorf("invalid tick size (%s), minimum for the market is %s", options.TickSize, minTickSize)
+		}
+		return options.TickSize, nil
+	}
+	return minTickSize, nil
+}
+
+func (c *ClobClient) resolveNegRisk(tokenID string, options *PartialCreateOrderOptions) (bool, error) {
+	if options != nil && options.NegRisk != nil {
+		return *options.NegRisk, nil
+	}
+	return c.GetNegRisk(tokenID)
+}
+
+func (c *ClobClient) resolveFeeRate(tokenID string, userFeeRate int) (int, error) {
+	feeRate, err := c.GetFeeRateBps(tokenID)
+	if err != nil {
+		return 0, err
+	}
+	if feeRate > 0 && userFeeRate > 0 && userFeeRate != feeRate {
+		return 0, fmt.Errorf("invalid user provided fee rate: (%d), fee rate for the market must be %d", userFeeRate, feeRate)
+	}
+	return feeRate, nil
+}
+
+func parseCreds(resp any) (*ApiCreds, error) {
+	data, ok := resp.(map[string]any)
+	if !ok {
+		return nil, errors.New("couldn't parse created CLOB creds")
+	}
+	apiKey := fmt.Sprintf("%v", data["apiKey"])
+	secret := fmt.Sprintf("%v", data["secret"])
+	passphrase := fmt.Sprintf("%v", data["passphrase"])
+	if apiKey == "" || secret == "" || passphrase == "" {
+		return nil, errors.New("couldn't parse created CLOB creds")
+	}
+	return &ApiCreds{APIKey: apiKey, APISecret: secret, APIPassphrase: passphrase}, nil
+}
+
+func parseFloatDefault(value string) float64 {
+	parsed, _ := strconvParseFloat(value)
+	return parsed
+}
