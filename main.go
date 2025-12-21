@@ -21,11 +21,15 @@ func run(market string) {
 		log.Fatal("Error creating Polymarket client", err)
 	}
 
-	NewOrderExecutor(client)
+	//orderExecutor := NewOrderExecutor(client)
+
+	InitAssets(client)
+	InitOrders(client)
 
 	userWS := polymarket.NewWebSocketOrderBook(
 		polymarket.UserChannel,
 		func(msg []byte) {
+			UpdateAsset(msg)
 		},
 	)
 
@@ -33,10 +37,6 @@ func run(market string) {
 		polymarket.MarketChannel,
 		func(msg []byte) {
 			assetIDs := UpdateOrderBook(msg)
-
-			for _, id := range assetIDs {
-				PrintTop(id)
-			}
 		},
 	)
 
@@ -71,7 +71,7 @@ func run(market string) {
 			}
 		}
 
-		if len(newTokenIDs) == 0 {
+		if len(newTokenIDs) == 0 || true {
 			continue
 		}
 

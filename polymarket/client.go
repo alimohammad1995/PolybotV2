@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
 
 type ClobClient struct {
-	host      string
+	clobHost  string
+	dataHost  string
 	chainID   int
 	signer    *Signer
 	creds     *ApiCreds
@@ -22,7 +24,6 @@ type ClobClient struct {
 }
 
 func NewClobClient(key string, signatureType uint8, funder string) (*ClobClient, error) {
-	trimmedHost := strings.TrimRight(CLOBEndpoint, "/")
 	var signer *Signer
 	var err error
 	if key != "" {
@@ -33,7 +34,8 @@ func NewClobClient(key string, signatureType uint8, funder string) (*ClobClient,
 	}
 
 	client := &ClobClient{
-		host:      trimmedHost,
+		clobHost:  strings.TrimRight(CLOBEndpoint, "/"),
+		dataHost:  strings.TrimRight(DataAPIEndpoint, "/"),
 		chainID:   POLYGON,
 		signer:    signer,
 		mode:      L0,
@@ -66,7 +68,7 @@ func (c *ClobClient) Address() string {
 }
 
 func (c *ClobClient) GetServerTime() (any, error) {
-	return c.http.Request("GET", c.host+TimeEndpoint, nil, nil)
+	return c.http.Request("GET", c.clobHost+TimeEndpoint, nil, nil)
 }
 
 func (c *ClobClient) CreateAPIKey(nonce int64) (*ApiCreds, error) {
@@ -78,7 +80,7 @@ func (c *ClobClient) CreateAPIKey(nonce int64) (*ApiCreds, error) {
 		return nil, err
 	}
 
-	resp, err := c.http.Request("POST", c.host+CreateAPIKeyEndpoint, headers, nil)
+	resp, err := c.http.Request("POST", c.clobHost+CreateAPIKeyEndpoint, headers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +96,7 @@ func (c *ClobClient) DeriveAPIKey(nonce int64) (*ApiCreds, error) {
 		return nil, err
 	}
 
-	resp, err := c.http.Request("GET", c.host+DeriveAPIKeyEndpoint, headers, nil)
+	resp, err := c.http.Request("GET", c.clobHost+DeriveAPIKeyEndpoint, headers, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -110,18 +112,87 @@ func (c *ClobClient) CreateOrDeriveAPICreds(nonce int64) (*ApiCreds, error) {
 }
 
 func (c *ClobClient) GetMarket(conditionID string) (any, error) {
-	return c.http.Request("GET", c.host+GetMarketEndpoint+conditionID, nil, nil)
+	return c.http.Request("GET", c.clobHost+GetMarketEndpoint+conditionID, nil, nil)
+}
+
+func (c *ClobClient) GetOrder(orderID string) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	reqPath := GetOrderEndpoint + orderID
+	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
+}
+
+func (c *ClobClient) GetTrades(params map[string]string) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	values := url.Values{}
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	query := values.Encode()
+	reqPath := TradesEndpoint
+	if query != "" {
+		reqPath += "?" + query
+	}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
+}
+
+func (c *ClobClient) GetActiveOrders(params map[string]string) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	values := url.Values{}
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	query := values.Encode()
+	reqPath := OrdersEndpoint
+	if query != "" {
+		reqPath += "?" + query
+	}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
+}
+
+func (c *ClobClient) GetPositions(user string, params map[string]string) (any, error) {
+	values := url.Values{}
+	values.Set("user", user)
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	query := values.Encode()
+	reqPath := GetPositionsEndpoint
+	if query != "" {
+		reqPath += "?" + query
+	}
+	return c.http.Request("GET", c.dataHost+reqPath, nil, nil)
 }
 
 func (c *ClobClient) GetMarkets(nextCursor string) (any, error) {
 	if nextCursor == "" {
 		nextCursor = "MA=="
 	}
-	return c.http.Request("GET", fmt.Sprintf("%s%s?next_cursor=%s", c.host, GetMarketsEndpoint, nextCursor), nil, nil)
+	return c.http.Request("GET", fmt.Sprintf("%s%s?next_cursor=%s", c.clobHost, GetMarketsEndpoint, nextCursor), nil, nil)
 }
 
 func (c *ClobClient) GetOrderBook(tokenID string) (OrderBookSummary, error) {
-	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetOrderBookEndpoint, tokenID), nil, nil)
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetOrderBookEndpoint, tokenID), nil, nil)
 	if err != nil {
 		return OrderBookSummary{}, err
 	}
@@ -137,7 +208,7 @@ func (c *ClobClient) GetOrderBooks(tokenIDs []string) (map[string]OrderBookSumma
 	for _, tokenID := range tokenIDs {
 		body = append(body, map[string]string{"token_id": tokenID})
 	}
-	resp, err := c.http.Request("POST", c.host+GetOrderBooksEndpoint, nil, body)
+	resp, err := c.http.Request("POST", c.clobHost+GetOrderBooksEndpoint, nil, body)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +232,7 @@ func (c *ClobClient) GetTickSize(tokenID string) (string, error) {
 	if val, ok := c.tickSizes[tokenID]; ok {
 		return val, nil
 	}
-	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetTickSizeEndpoint, tokenID), nil, nil)
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetTickSizeEndpoint, tokenID), nil, nil)
 	if err != nil {
 		return "", err
 	}
@@ -178,7 +249,7 @@ func (c *ClobClient) GetNegRisk(tokenID string) (bool, error) {
 	if val, ok := c.negRisk[tokenID]; ok {
 		return val, nil
 	}
-	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetNegRiskEndpoint, tokenID), nil, nil)
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetNegRiskEndpoint, tokenID), nil, nil)
 	if err != nil {
 		return false, err
 	}
@@ -195,7 +266,7 @@ func (c *ClobClient) GetFeeRateBps(tokenID string) (int, error) {
 	if val, ok := c.feeRates[tokenID]; ok {
 		return val, nil
 	}
-	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.host, GetFeeRateEndpoint, tokenID), nil, nil)
+	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetFeeRateEndpoint, tokenID), nil, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -293,9 +364,6 @@ func (c *ClobClient) PostOrder(order SignedOrder, orderType OrderType) (any, err
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
 	}
-	if orderType == "" {
-		orderType = OrderTypeGTC
-	}
 	body := map[string]any{
 		"order":     order.ToJSONMap(),
 		"owner":     c.creds.APIKey,
@@ -311,7 +379,7 @@ func (c *ClobClient) PostOrder(order SignedOrder, orderType OrderType) (any, err
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Request("POST", c.host+PostOrderEndpoint, headers, reqArgs.SerializedBody)
+	return c.http.Request("POST", c.clobHost+PostOrderEndpoint, headers, reqArgs.SerializedBody)
 }
 
 func (c *ClobClient) CancelAllOrders() (any, error) {
@@ -323,7 +391,27 @@ func (c *ClobClient) CancelAllOrders() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Request("DELETE", c.host+CancelAllEndpoint, headers, nil)
+	return c.http.Request("DELETE", c.clobHost+CancelAllEndpoint, headers, nil)
+}
+
+func (c *ClobClient) CancelOrders(orderIDs []string) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	if len(orderIDs) == 0 {
+		return nil, nil
+	}
+	body := orderIDs
+	serialized, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	reqArgs := RequestArgs{Method: "DELETE", RequestPath: CancelOrdersEndpoint, Body: body, SerializedBody: string(serialized)}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("DELETE", c.clobHost+CancelOrdersEndpoint, headers, reqArgs.SerializedBody)
 }
 
 func (c *ClobClient) CancelMarketOrders(tokenID string) (any, error) {
@@ -343,7 +431,7 @@ func (c *ClobClient) CancelMarketOrders(tokenID string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Request("POST", c.host+CancelMarketOrdersEndpoint, headers, reqArgs.SerializedBody)
+	return c.http.Request("POST", c.clobHost+CancelMarketOrdersEndpoint, headers, reqArgs.SerializedBody)
 }
 
 func (c *ClobClient) CalculateMarketPrice(tokenID string, side OrderSide, amount float64, orderType OrderType) (float64, error) {

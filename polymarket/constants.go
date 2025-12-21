@@ -12,8 +12,9 @@ const (
 )
 
 const (
-	CLOBEndpoint   = "https://clob.polymarket.com"
-	PolyWSEndpoint = "wss://ws-subscriptions-clob.polymarket.com/ws/"
+	CLOBEndpoint    = "https://clob.polymarket.com"
+	PolyWSEndpoint  = "wss://ws-subscriptions-clob.polymarket.com/ws/"
+	DataAPIEndpoint = "https://data-api.polymarket.com"
 )
 
 const (
@@ -72,6 +73,10 @@ const (
 	RFQRequestsAcceptEndpoint      = "/rfq/request/accept"
 	RFQQuoteApproveEndpoint        = "/rfq/quote/approve"
 	RFQConfigEndpoint              = "/rfq/config"
+)
+
+const (
+	GetPositionsEndpoint = "/positions"
 )
 
 const (

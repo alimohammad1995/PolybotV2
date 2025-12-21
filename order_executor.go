@@ -12,13 +12,10 @@ func NewOrderExecutor(client *PolymarketClient) *OrderExecutor {
 
 func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType polymarket.OrderType) (any, error) {
 	args := polymarket.OrderArgs{
-		TokenID:    tokenID,
-		Price:      price,
-		Size:       size,
-		Side:       polymarket.SideBuy,
-		FeeRateBps: 0,
-		Expiration: 0,
-		Nonce:      0,
+		TokenID: tokenID,
+		Price:   price,
+		Size:    size,
+		Side:    polymarket.SideBuy,
 	}
 	order, err := e.client.client.CreateOrder(args, nil)
 	if err != nil {

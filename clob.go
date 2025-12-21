@@ -41,3 +41,7 @@ func (receiver *PolymarketClient) GetCreds() map[string]string {
 		"passphrase": receiver.creds.APIPassphrase,
 	}
 }
+
+func (receiver *PolymarketClient) Me() string {
+	return os.Getenv("MAIN_ACCOUNT_FUNDER_ADDRESS")
+}

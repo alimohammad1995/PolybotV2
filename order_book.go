@@ -8,20 +8,21 @@ import (
 	"strconv"
 )
 
-var OrderBook map[string]*OrderBookModel
+// OrderBook TokenID => MarketOrderBook
+var OrderBook = make(map[string]*MarketOrderBook)
 
-type Order struct {
+type MarketOrder struct {
 	Price int
 	Size  float64
 }
 
-type OrderBookModel struct {
+type MarketOrderBook struct {
 	Asks []float64
 	Bids []float64
 }
 
-func GetTop(tokenID string) []*Order {
-	res := make([]*Order, 2)
+func GetTop(tokenID string) []*MarketOrder {
+	res := make([]*MarketOrder, 2)
 	book, ok := OrderBook[tokenID]
 	if !ok || book == nil {
 		return res
@@ -43,10 +44,10 @@ func GetTop(tokenID string) []*Order {
 	}
 
 	if bestBid >= 0 {
-		res[0] = &Order{Price: bestBid, Size: book.Bids[bestBid]}
+		res[0] = &MarketOrder{Price: bestBid, Size: book.Bids[bestBid]}
 	}
 	if bestAsk < 101 {
-		res[1] = &Order{Price: bestAsk, Size: book.Asks[bestAsk]}
+		res[1] = &MarketOrder{Price: bestAsk, Size: book.Asks[bestAsk]}
 	}
 
 	return res
@@ -62,10 +63,6 @@ func UpdateOrderBook(message []byte) []string {
 	var payload any
 	if err := json.Unmarshal(message, &payload); err != nil {
 		return nil
-	}
-
-	if OrderBook == nil {
-		OrderBook = make(map[string]*OrderBookModel)
 	}
 
 	switch v := payload.(type) {
@@ -119,7 +116,7 @@ func applyBookSnapshot(msg map[string]any) []string {
 		return nil
 	}
 
-	book := &OrderBookModel{
+	book := &MarketOrderBook{
 		Asks: make([]float64, 101),
 		Bids: make([]float64, 101),
 	}
@@ -130,7 +127,7 @@ func applyBookSnapshot(msg map[string]any) []string {
 				price, okPrice := parseFloat(bidMap["price"])
 				size, okSize := parseFloat(bidMap["size"])
 				if okPrice && okSize {
-					book.Bids[floatToInt(price)] = size
+					book.Bids[PriceToInt(price)] = size
 				}
 			}
 		}
@@ -142,7 +139,7 @@ func applyBookSnapshot(msg map[string]any) []string {
 				price, okPrice := parseFloat(askMap["price"])
 				size, okSize := parseFloat(askMap["size"])
 				if okPrice && okSize {
-					book.Asks[floatToInt(price)] = size
+					book.Asks[PriceToInt(price)] = size
 				}
 			}
 		}
@@ -183,9 +180,9 @@ func applyPriceChange(msg map[string]any) []string {
 		}
 
 		if side == string(polymarket.SideBuy) {
-			book.Bids[floatToInt(price)] = size
+			book.Bids[PriceToInt(price)] = size
 		} else if side == string(polymarket.SideSell) {
-			book.Asks[floatToInt(price)] = size
+			book.Asks[PriceToInt(price)] = size
 		}
 
 		assetIDs = append(assetIDs, assetID)
@@ -207,6 +204,6 @@ func parseFloat(value any) (float64, bool) {
 	}
 }
 
-func floatToInt(value float64) int {
+func PriceToInt(value float64) int {
 	return int(value * 100)
 }
