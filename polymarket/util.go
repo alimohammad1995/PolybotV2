@@ -1,8 +1,6 @@
 package polymarket
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"math"
 	"strconv"
@@ -22,53 +20,6 @@ func stringifyBody(body any) string {
 		return string(data)
 	}
 	return stringFromAny(body)
-}
-
-func ParseOrderBookSummary(raw map[string]any) OrderBookSummary {
-	bids := make([]OrderSummary, 0)
-	if rawBids, ok := raw["bids"].([]any); ok {
-		for _, bid := range rawBids {
-			if bidMap, ok := bid.(map[string]any); ok {
-				bids = append(bids, OrderSummary{
-					Size:  stringFromAny(bidMap["size"]),
-					Price: stringFromAny(bidMap["price"]),
-				})
-			}
-		}
-	}
-
-	asks := make([]OrderSummary, 0)
-	if rawAsks, ok := raw["asks"].([]any); ok {
-		for _, ask := range rawAsks {
-			if askMap, ok := ask.(map[string]any); ok {
-				asks = append(asks, OrderSummary{
-					Size:  stringFromAny(askMap["size"]),
-					Price: stringFromAny(askMap["price"]),
-				})
-			}
-		}
-	}
-
-	return OrderBookSummary{
-		Market:       stringFromAny(raw["market"]),
-		AssetID:      stringFromAny(raw["asset_id"]),
-		Timestamp:    stringFromAny(raw["timestamp"]),
-		MinOrderSize: stringFromAny(raw["min_order_size"]),
-		NegRisk:      toBool(raw["neg_risk"]),
-		TickSize:     stringFromAny(raw["tick_size"]),
-		Bids:         bids,
-		Asks:         asks,
-		Hash:         stringFromAny(raw["hash"]),
-	}
-}
-
-func GenerateOrderBookSummaryHash(orderbook OrderBookSummary) string {
-	clone := orderbook
-	clone.Hash = ""
-	data, _ := json.Marshal(clone)
-	hash := sha1.Sum(data)
-	orderbook.Hash = hex.EncodeToString(hash[:])
-	return orderbook.Hash
 }
 
 func IsTickSizeSmaller(a, b string) bool {
