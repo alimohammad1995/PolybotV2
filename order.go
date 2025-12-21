@@ -8,7 +8,6 @@ import (
 
 func InitOrders(client *PolymarketClient) {
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	for marketID := range ActiveMarkets {
 		wg.Add(1)
@@ -19,14 +18,14 @@ func InitOrders(client *PolymarketClient) {
 				log.Printf("init orders: get active orders failed for %s: %v", market, err)
 				return
 			}
-			applyOrders(resp, &mu)
+			applyOrders(resp)
 		}(marketID)
 	}
 
 	wg.Wait()
 }
 
-func applyOrders(payload any, mu *sync.Mutex) {
+func applyOrders(payload any) {
 	raw, ok := payload.(map[string]any)
 	if !ok {
 		log.Printf("init orders: invalid response: %T", payload)
@@ -56,15 +55,13 @@ func applyOrders(payload any, mu *sync.Mutex) {
 			continue
 		}
 
-		mu.Lock()
-		Orders[orderID] = &Order{
+		AddOrder(&Order{
 			ID:           orderID,
 			MarketID:     fmt.Sprintf("%v", orderMap["market"]),
 			AssetID:      fmt.Sprintf("%v", orderMap["asset_id"]),
 			OriginalSize: origSize,
 			MatchedSize:  matchedSize,
 			Price:        PriceToInt(priceVal),
-		}
-		mu.Unlock()
+		})
 	}
 }

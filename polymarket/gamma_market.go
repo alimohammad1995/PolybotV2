@@ -18,8 +18,28 @@ type GammaMarketSummary struct {
 	ClobTokenIDs []string
 }
 
-func GammaMarketSummaryFromDict(payload map[string]any) GammaMarketSummary {
-	return GammaMarketSummary{
+func (g *GammaMarketSummary) ToMap() map[string]any {
+	return map[string]any{
+		"conditionId":    g.MarketID,
+		"slug":           g.Slug,
+		"active":         g.Active,
+		"closed":         g.Closed,
+		"endDate":        g.EndDateTS,
+		"eventStartTime": g.StartDateTS,
+		"clobTokenIds":   g.ClobTokenIDs,
+	}
+}
+
+func (g *GammaMarketSummary) ToEnd() int64 {
+	return g.EndDateTS - time.Now().Unix()
+}
+
+func (g *GammaMarketSummary) ToStart() int64 {
+	return g.StartDateTS - time.Now().Unix()
+}
+
+func GammaMarketSummaryFromDict(payload map[string]any) *GammaMarketSummary {
+	return &GammaMarketSummary{
 		MarketID:     fmt.Sprintf("%v", payload["conditionId"]),
 		Slug:         fmt.Sprintf("%v", payload["slug"]),
 		Active:       toBool(payload["active"]),
@@ -31,7 +51,7 @@ func GammaMarketSummaryFromDict(payload map[string]any) GammaMarketSummary {
 }
 
 type GammaMarket struct {
-	cache      map[string]GammaMarketSummary
+	cache      map[string]*GammaMarketSummary
 	cacheOrder []string
 	cacheSize  int
 	httpClient *http.Client
@@ -46,14 +66,14 @@ func NewGammaMarketWithCacheSize(cacheSize int) *GammaMarket {
 		cacheSize = GammaMarketCacheSize
 	}
 	return &GammaMarket{
-		cache:      map[string]GammaMarketSummary{},
+		cache:      map[string]*GammaMarketSummary{},
 		cacheOrder: []string{},
 		cacheSize:  cacheSize,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-func (g *GammaMarket) GetMarketBySlug(slug string) (GammaMarketSummary, error) {
+func (g *GammaMarket) GetMarketBySlug(slug string) (*GammaMarketSummary, error) {
 	if cached, ok := g.cache[slug]; ok {
 		return cached, nil
 	}
@@ -61,36 +81,36 @@ func (g *GammaMarket) GetMarketBySlug(slug string) (GammaMarketSummary, error) {
 	url := fmt.Sprintf("https://gamma-api.polymarket.com/markets/slug/%s", slug)
 	resp, err := g.httpClient.Get(url)
 	if err != nil {
-		return GammaMarketSummary{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return GammaMarketSummary{}, fmt.Errorf("gamma market http %d", resp.StatusCode)
+		return nil, fmt.Errorf("gamma market http %d", resp.StatusCode)
 	}
 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return GammaMarketSummary{}, err
+		return nil, err
 	}
 	market := GammaMarketSummaryFromDict(payload)
 
 	if len(market.ClobTokenIDs) != 2 {
-		return GammaMarketSummary{}, fmt.Errorf("expected 2 tokens for %s; got %v", slug, market.ClobTokenIDs)
+		return nil, fmt.Errorf("expected 2 tokens for %s; got %v", slug, market.ClobTokenIDs)
 	}
 	if market.EndDateTS <= 0 {
-		return GammaMarketSummary{}, fmt.Errorf("invalid end date for %s: %d", slug, market.EndDateTS)
+		return nil, fmt.Errorf("invalid end date for %s: %d", slug, market.EndDateTS)
 	}
 	if market.StartDateTS <= 0 {
-		return GammaMarketSummary{}, fmt.Errorf("invalid start date for %s: %d", slug, market.StartDateTS)
+		return nil, fmt.Errorf("invalid start date for %s: %d", slug, market.StartDateTS)
 	}
 	if !market.Active {
-		return GammaMarketSummary{}, fmt.Errorf("market %s is not active", slug)
+		return nil, fmt.Errorf("market %s is not active", slug)
 	}
 	if market.Slug != slug {
-		return GammaMarketSummary{}, fmt.Errorf("market slug mismatch: expected %s, got %s", slug, market.Slug)
+		return nil, fmt.Errorf("market slug mismatch: expected %s, got %s", slug, market.Slug)
 	}
 	if market.MarketID == "" || market.MarketID == "<nil>" {
-		return GammaMarketSummary{}, fmt.Errorf("market id is empty for %s", slug)
+		return nil, fmt.Errorf("market id is empty for %s", slug)
 	}
 
 	g.cache[slug] = market

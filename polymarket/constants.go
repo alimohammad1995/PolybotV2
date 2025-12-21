@@ -84,4 +84,4 @@ const (
 	L2AuthUnavailable = "API Credentials are needed to interact with this endpoint!"
 )
 
-const GammaMarketCacheSize = 256
+const GammaMarketCacheSize = 1024

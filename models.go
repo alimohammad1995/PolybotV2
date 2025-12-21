@@ -1,7 +1,24 @@
 package main
 
+import (
+	"Polybot/polymarket"
+	"fmt"
+	"sync"
+)
+
+var mu = &sync.Mutex{}
+
 var Orders = make(map[string]*Order)
+var MarketToOrderIDs = make(map[string][]string)
+var AssetToOrderIDs = make(map[string][]string)
+var AssetPriceToOrderIDs = make(map[string][]string)
+
 var Inventory = make(map[string]*Asset)
+
+var MarketToMarketID = make(map[string]string)
+var MarketIDToMarketInfo = make(map[string]*polymarket.GammaMarketSummary)
+var TokenToMarketID = make(map[string]string)
+var TokenToTokenRival = make(map[string]string)
 
 type Order struct {
 	ID           string
@@ -22,4 +39,60 @@ type Asset struct {
 func (asset *Asset) Update(price int, quantity float64) {
 	asset.AveragePrice = (asset.AveragePrice*asset.Size + float64(price)*quantity) / (asset.Size + quantity)
 	asset.Size += quantity
+}
+
+func AddOrder(order *Order) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	Orders[order.ID] = order
+
+	MarketToOrderIDs[order.MarketID] = append(MarketToOrderIDs[order.MarketID], order.ID)
+	AssetToOrderIDs[order.AssetID] = append(AssetToOrderIDs[order.AssetID], order.ID)
+
+	assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
+	AssetPriceToOrderIDs[assetPrice] = append(AssetPriceToOrderIDs[assetPrice], order.ID)
+}
+
+func DeleteOrder(orderID string) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	delete(AssetToOrderIDs, Orders[orderID].AssetID)
+	delete(MarketToOrderIDs, Orders[orderID].MarketID)
+
+	assetPrice := fmt.Sprintf("%s_%d", Orders[orderID].AssetID, Orders[orderID].Price)
+	delete(AssetPriceToOrderIDs, assetPrice)
+
+	delete(Orders, orderID)
+}
+
+func AddAsset(assetID, marketID string, size float64, price float64) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	asset := Inventory[assetID]
+	if asset == nil {
+		asset = &Asset{AssetID: assetID, MarketID: marketID}
+		Inventory[assetID] = asset
+	}
+
+	asset.Update(PriceToInt(price), size)
+}
+
+func AddMarket(marketInfo *polymarket.GammaMarketSummary) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	MarketToMarketID[marketInfo.Slug] = marketInfo.MarketID
+	MarketIDToMarketInfo[marketInfo.MarketID] = marketInfo
+
+	tokenYes := marketInfo.ClobTokenIDs[0]
+	tokenNo := marketInfo.ClobTokenIDs[1]
+
+	TokenToMarketID[tokenYes] = marketInfo.MarketID
+	TokenToMarketID[tokenNo] = marketInfo.MarketID
+
+	TokenToTokenRival[tokenYes] = tokenNo
+	TokenToTokenRival[tokenNo] = tokenYes
 }

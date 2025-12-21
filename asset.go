@@ -11,7 +11,6 @@ import (
 
 func InitAssets(client *PolymarketClient) {
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 
 	for marketID := range ActiveMarkets {
 		wg.Add(1)
@@ -22,7 +21,7 @@ func InitAssets(client *PolymarketClient) {
 				log.Printf("init assets: get trades failed for %s: %v", market, err)
 				return
 			}
-			applyTradesToInventory(resp, &mu)
+			applyTradesToInventory(resp)
 		}(marketID)
 	}
 
@@ -47,7 +46,7 @@ func UpdateAsset(msg []byte) {
 	}
 }
 
-func applyTradesToInventory(payload any, mu *sync.Mutex) {
+func applyTradesToInventory(payload any) {
 	raw, ok := payload.(map[string]any)
 	if !ok {
 		log.Printf("init assets: invalid trades response: %T", payload)
@@ -76,22 +75,11 @@ func applyTradesToInventory(payload any, mu *sync.Mutex) {
 		if !okPrice || !okSize {
 			continue
 		}
-		price := PriceToInt(priceVal)
 		side := fmt.Sprintf("%v", trade["side"])
 
-		mu.Lock()
-
-		asset := Inventory[assetID]
-		if asset == nil {
-			asset = &Asset{AssetID: assetID, MarketID: marketID}
-			Inventory[assetID] = asset
-		}
-
 		if side == string(polymarket.SideBuy) {
-			asset.Update(price, sizeVal)
+			AddAsset(assetID, marketID, sizeVal, priceVal)
 		}
-
-		mu.Unlock()
 	}
 }
 
@@ -121,11 +109,5 @@ func applyAssetTradeEvent(msg map[string]any) {
 		return
 	}
 
-	asset := Inventory[assetID]
-	if asset == nil {
-		asset = &Asset{AssetID: assetID, MarketID: marketID}
-		Inventory[assetID] = asset
-	}
-
-	asset.Update(PriceToInt(priceVal), sizeVal)
+	AddAsset(assetID, marketID, sizeVal, priceVal)
 }

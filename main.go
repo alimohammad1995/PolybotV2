@@ -4,7 +4,6 @@ import (
 	"Polybot/polymarket"
 	"log"
 	"os"
-	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -36,66 +35,16 @@ func run(market string) {
 	marketWS := polymarket.NewWebSocketOrderBook(
 		polymarket.MarketChannel,
 		func(msg []byte) {
-			assetIDs := UpdateOrderBook(msg)
+			_ = UpdateOrderBook(msg)
 		},
 	)
 
 	userWS.RunAsync(map[string]any{"markets": []string{}, "type": polymarket.UserChannel, "auth": client.GetCreds()})
 	marketWS.RunAsync(nil)
 
-	subscribedList := make([]string, 0, LookAhead*2)
-	subscribedMap := make(map[string]bool)
+	Listener(market, gamma, marketWS)
 
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		newTokenIDs := make([]string, 0, LookAhead*2)
-
-		for i := 0; i < LookAhead; i++ {
-			marketName, _ := GetMarketName(market, i)
-			marketInfo, err := gamma.GetMarketBySlug(marketName)
-
-			if err != nil {
-				continue
-			}
-
-			tokenYes := marketInfo.ClobTokenIDs[0]
-			tokenNo := marketInfo.ClobTokenIDs[1]
-
-			if !subscribedMap[tokenYes] {
-				newTokenIDs = append(newTokenIDs, tokenYes)
-			}
-			if !subscribedMap[tokenNo] {
-				newTokenIDs = append(newTokenIDs, tokenNo)
-			}
-		}
-
-		if len(newTokenIDs) == 0 || true {
-			continue
-		}
-
-		log.Println("Subscribing to token IDs", newTokenIDs)
-		if err := marketWS.SubscribeToTokenIDs(newTokenIDs); err != nil {
-			log.Println("Error subscribing to token IDs", err, newTokenIDs)
-			continue
-		}
-
-		for _, tokenID := range newTokenIDs {
-			subscribedMap[tokenID] = true
-		}
-		subscribedList = append(subscribedList, newTokenIDs...)
-
-		if len(subscribedList) > 2*LookAhead {
-			unsubscribeList := subscribedList[:len(subscribedList)-LookAhead*2]
-			log.Println("Unsubscribing to token IDs", unsubscribeList)
-			if err := marketWS.UnsubscribeToTokenIDs(unsubscribeList); err != nil {
-				log.Println("Error unsubscribing to token IDs", err, unsubscribeList)
-			}
-			subscribedList = subscribedList[len(subscribedList)-LookAhead*2:]
-			DeleteOrderBook(unsubscribeList)
-		}
-	}
+	select {}
 }
 
 func main() {
