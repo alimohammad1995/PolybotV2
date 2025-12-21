@@ -32,7 +32,11 @@ func run(market string) {
 	marketWS := polymarket.NewWebSocketOrderBook(
 		polymarket.MarketChannel,
 		func(msg []byte) {
-			UpdateOrderBook(msg)
+			assetIDs := UpdateOrderBook(msg)
+
+			for _, id := range assetIDs {
+				PrintTop(id)
+			}
 		},
 	)
 
@@ -46,8 +50,6 @@ func run(market string) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		PrintOrderBook()
-
 		newTokenIDs := make([]string, 0, LookAhead*2)
 
 		for i := 0; i < LookAhead; i++ {

@@ -20,15 +20,48 @@ type OrderBookModel struct {
 	Bids []float64
 }
 
-func GetTop(tokenID string) []Order {
-	res := make([][]Order, 2)
+func GetTop(tokenID string) []*Order {
+	res := make([]*Order, 2)
+	book, ok := OrderBook[tokenID]
+	if !ok || book == nil {
+		return res
+	}
 
+	bestBid := -1
+	bestAsk := 101
+
+	for i := 0; i < len(book.Bids); i++ {
+		bidIndex := i
+		askIndex := len(book.Asks) - i - 1
+
+		if book.Bids[bidIndex] > 0 {
+			bestBid = bidIndex
+		}
+		if book.Asks[askIndex] > 0 {
+			bestAsk = askIndex
+		}
+	}
+
+	if bestBid >= 0 {
+		res[0] = &Order{Price: bestBid, Size: book.Bids[bestBid]}
+	}
+	if bestAsk < 101 {
+		res[1] = &Order{Price: bestAsk, Size: book.Asks[bestAsk]}
+	}
+
+	return res
 }
 
-func UpdateOrderBook(message []byte) {
+func PrintTop(tokenID string) {
+	orders := GetTop(tokenID)
+	jsonOrders, _ := json.Marshal(orders)
+	log.Println(tokenID, "=>", string(jsonOrders))
+}
+
+func UpdateOrderBook(message []byte) []string {
 	var payload any
 	if err := json.Unmarshal(message, &payload); err != nil {
-		return
+		return nil
 	}
 
 	if OrderBook == nil {
@@ -37,14 +70,21 @@ func UpdateOrderBook(message []byte) {
 
 	switch v := payload.(type) {
 	case map[string]any:
-		applyOrderBookEvent(v)
+		return applyOrderBookEvent(v)
 	case []any:
+		assetIDs := make([]string, 0, len(v)*2)
+
 		for _, item := range v {
 			if msg, ok := item.(map[string]any); ok {
-				applyOrderBookEvent(msg)
+				if updatedAssetIds := applyOrderBookEvent(msg); len(updatedAssetIds) > 0 {
+					assetIDs = append(assetIDs, updatedAssetIds...)
+				}
 			}
 		}
+		return assetIDs
 	}
+
+	return nil
 }
 
 func DeleteOrderBook(assetIDs []string) {
@@ -61,20 +101,22 @@ func PrintOrderBook() {
 	}
 }
 
-func applyOrderBookEvent(msg map[string]any) {
+func applyOrderBookEvent(msg map[string]any) []string {
 	eventType := fmt.Sprintf("%v", msg["event_type"])
 	switch eventType {
 	case "book":
-		applyBookSnapshot(msg)
+		return applyBookSnapshot(msg)
 	case "price_change":
-		applyPriceChange(msg)
+		return applyPriceChange(msg)
 	}
+
+	return nil
 }
 
-func applyBookSnapshot(msg map[string]any) {
+func applyBookSnapshot(msg map[string]any) []string {
 	assetID := fmt.Sprintf("%v", msg["asset_id"])
 	if assetID == "" || assetID == "<nil>" {
-		return
+		return nil
 	}
 
 	book := &OrderBookModel{
@@ -107,13 +149,15 @@ func applyBookSnapshot(msg map[string]any) {
 	}
 
 	OrderBook[assetID] = book
+	return []string{assetID}
 }
 
-func applyPriceChange(msg map[string]any) {
+func applyPriceChange(msg map[string]any) []string {
 	priceChanges, ok := msg["price_changes"].([]any)
 	if !ok {
-		return
+		return nil
 	}
+	assetIDs := make([]string, 0, len(priceChanges))
 
 	for _, change := range priceChanges {
 		changeMap, ok := change.(map[string]any)
@@ -135,7 +179,7 @@ func applyPriceChange(msg map[string]any) {
 
 		book, ok := OrderBook[assetID]
 		if !ok {
-			return
+			continue
 		}
 
 		if side == string(polymarket.SideBuy) {
@@ -143,7 +187,11 @@ func applyPriceChange(msg map[string]any) {
 		} else if side == string(polymarket.SideSell) {
 			book.Asks[floatToInt(price)] = size
 		}
+
+		assetIDs = append(assetIDs, assetID)
 	}
+
+	return assetIDs
 }
 
 func parseFloat(value any) (float64, bool) {
