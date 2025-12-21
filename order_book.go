@@ -3,7 +3,6 @@ package main
 import (
 	"Polybot/polymarket"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strconv"
 )
@@ -99,7 +98,7 @@ func PrintOrderBook() {
 }
 
 func applyOrderBookEvent(msg map[string]any) []string {
-	eventType := fmt.Sprintf("%v", msg["event_type"])
+	eventType := stringFromAny(msg["event_type"])
 	switch eventType {
 	case "book":
 		return applyBookSnapshot(msg)
@@ -111,7 +110,7 @@ func applyOrderBookEvent(msg map[string]any) []string {
 }
 
 func applyBookSnapshot(msg map[string]any) []string {
-	assetID := fmt.Sprintf("%v", msg["asset_id"])
+	assetID := stringFromAny(msg["asset_id"])
 	if assetID == "" || assetID == "<nil>" {
 		return nil
 	}
@@ -162,12 +161,12 @@ func applyPriceChange(msg map[string]any) []string {
 			continue
 		}
 
-		assetID := fmt.Sprintf("%v", changeMap["asset_id"])
+		assetID := stringFromAny(changeMap["asset_id"])
 		if assetID == "" || assetID == "<nil>" {
 			continue
 		}
 
-		side := fmt.Sprintf("%v", changeMap["side"])
+		side := stringFromAny(changeMap["side"])
 		price, okPrice := parseFloat(changeMap["price"])
 		size, okSize := parseFloat(changeMap["size"])
 		if !okPrice || !okSize {
@@ -195,12 +194,28 @@ func parseFloat(value any) (float64, bool) {
 	switch v := value.(type) {
 	case float64:
 		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
 	case string:
 		f, err := strconv.ParseFloat(v, 64)
 		return f, err == nil
 	default:
-		f, err := strconv.ParseFloat(fmt.Sprintf("%v", value), 64)
-		return f, err == nil
+		return 0, false
 	}
 }
 

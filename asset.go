@@ -3,7 +3,6 @@ package main
 import (
 	"Polybot/polymarket"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -64,18 +63,18 @@ func applyTradesToInventory(payload any) {
 			continue
 		}
 
-		assetID := fmt.Sprintf("%v", trade["asset_id"])
+		assetID := stringFromAny(trade["asset_id"])
 		if assetID == "" || assetID == "<nil>" {
 			continue
 		}
-		marketID := fmt.Sprintf("%v", trade["market"])
+		marketID := stringFromAny(trade["market"])
 
 		priceVal, okPrice := parseFloat(trade["price"])
 		sizeVal, okSize := parseFloat(trade["size"])
 		if !okPrice || !okSize {
 			continue
 		}
-		side := fmt.Sprintf("%v", trade["side"])
+		side := stringFromAny(trade["side"])
 
 		if side == string(polymarket.SideBuy) {
 			AddAsset(assetID, marketID, sizeVal, priceVal)
@@ -84,19 +83,19 @@ func applyTradesToInventory(payload any) {
 }
 
 func applyAssetTradeEvent(msg map[string]any) {
-	eventType := strings.ToLower(fmt.Sprintf("%v", msg["event_type"]))
+	eventType := strings.ToLower(stringFromAny(msg["event_type"]))
 	if eventType == "" || eventType == "<nil>" {
-		eventType = strings.ToLower(fmt.Sprintf("%v", msg["type"]))
+		eventType = strings.ToLower(stringFromAny(msg["type"]))
 	}
 	if eventType != "trade" {
 		return
 	}
 
-	assetID := fmt.Sprintf("%v", msg["asset_id"])
+	assetID := stringFromAny(msg["asset_id"])
 	if assetID == "" || assetID == "<nil>" {
 		return
 	}
-	marketID := fmt.Sprintf("%v", msg["market"])
+	marketID := stringFromAny(msg["market"])
 
 	priceVal, okPrice := parseFloat(msg["price"])
 	sizeVal, okSize := parseFloat(msg["size"])
@@ -104,7 +103,7 @@ func applyAssetTradeEvent(msg map[string]any) {
 		return
 	}
 
-	side := fmt.Sprintf("%v", msg["side"])
+	side := stringFromAny(msg["side"])
 	if side != string(polymarket.SideBuy) {
 		return
 	}

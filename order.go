@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"sync"
 )
@@ -43,7 +42,7 @@ func applyOrders(payload any) {
 			continue
 		}
 
-		orderID := fmt.Sprintf("%v", orderMap["id"])
+		orderID := stringFromAny(orderMap["id"])
 		if orderID == "" || orderID == "<nil>" {
 			continue
 		}
@@ -57,8 +56,8 @@ func applyOrders(payload any) {
 
 		AddOrder(&Order{
 			ID:           orderID,
-			MarketID:     fmt.Sprintf("%v", orderMap["market"]),
-			AssetID:      fmt.Sprintf("%v", orderMap["asset_id"]),
+			MarketID:     stringFromAny(orderMap["market"]),
+			AssetID:      stringFromAny(orderMap["asset_id"]),
 			OriginalSize: origSize,
 			MatchedSize:  matchedSize,
 			Price:        PriceToInt(priceVal),

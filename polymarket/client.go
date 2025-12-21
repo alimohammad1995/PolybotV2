@@ -240,7 +240,7 @@ func (c *ClobClient) GetTickSize(tokenID string) (string, error) {
 	if !ok {
 		return "", errors.New("invalid tick size response")
 	}
-	value := fmt.Sprintf("%v", result["minimum_tick_size"])
+	value := stringFromAny(result["minimum_tick_size"])
 	c.tickSizes[tokenID] = value
 	return value, nil
 }
@@ -502,9 +502,9 @@ func parseCreds(resp any) (*ApiCreds, error) {
 	if !ok {
 		return nil, errors.New("couldn't parse created CLOB creds")
 	}
-	apiKey := fmt.Sprintf("%v", data["apiKey"])
-	secret := fmt.Sprintf("%v", data["secret"])
-	passphrase := fmt.Sprintf("%v", data["passphrase"])
+	apiKey := stringFromAny(data["apiKey"])
+	secret := stringFromAny(data["secret"])
+	passphrase := stringFromAny(data["passphrase"])
 	if apiKey == "" || secret == "" || passphrase == "" {
 		return nil, errors.New("couldn't parse created CLOB creds")
 	}

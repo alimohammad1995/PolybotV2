@@ -40,12 +40,12 @@ func (g *GammaMarketSummary) ToStart() int64 {
 
 func GammaMarketSummaryFromDict(payload map[string]any) *GammaMarketSummary {
 	return &GammaMarketSummary{
-		MarketID:     fmt.Sprintf("%v", payload["conditionId"]),
-		Slug:         fmt.Sprintf("%v", payload["slug"]),
+		MarketID:     stringFromAny(payload["conditionId"]),
+		Slug:         stringFromAny(payload["slug"]),
 		Active:       toBool(payload["active"]),
 		Closed:       toBool(payload["closed"]),
-		EndDateTS:    parseISOTimestamp(fmt.Sprintf("%v", payload["endDate"])),
-		StartDateTS:  parseISOTimestamp(fmt.Sprintf("%v", payload["eventStartTime"])),
+		EndDateTS:    parseISOTimestamp(stringFromAny(payload["endDate"])),
+		StartDateTS:  parseISOTimestamp(stringFromAny(payload["eventStartTime"])),
 		ClobTokenIDs: parseClobTokenIDs(payload["clobTokenIds"]),
 	}
 }
@@ -148,7 +148,7 @@ func parseClobTokenIDs(raw any) []string {
 	case []any:
 		ids := make([]string, 0, len(v))
 		for _, item := range v {
-			ids = append(ids, fmt.Sprintf("%v", item))
+			ids = append(ids, stringFromAny(item))
 		}
 		return ids
 	case []string:
@@ -164,7 +164,7 @@ func parseClobTokenIDs(raw any) []string {
 		if list, ok := parsed.([]any); ok {
 			ids := make([]string, 0, len(list))
 			for _, item := range list {
-				ids = append(ids, fmt.Sprintf("%v", item))
+				ids = append(ids, stringFromAny(item))
 			}
 			return ids
 		}

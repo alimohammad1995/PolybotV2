@@ -4,7 +4,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -22,7 +21,7 @@ func stringifyBody(body any) string {
 	if err == nil {
 		return string(data)
 	}
-	return fmt.Sprintf("%v", body)
+	return stringFromAny(body)
 }
 
 func ParseOrderBookSummary(raw map[string]any) OrderBookSummary {
@@ -31,8 +30,8 @@ func ParseOrderBookSummary(raw map[string]any) OrderBookSummary {
 		for _, bid := range rawBids {
 			if bidMap, ok := bid.(map[string]any); ok {
 				bids = append(bids, OrderSummary{
-					Size:  fmt.Sprintf("%v", bidMap["size"]),
-					Price: fmt.Sprintf("%v", bidMap["price"]),
+					Size:  stringFromAny(bidMap["size"]),
+					Price: stringFromAny(bidMap["price"]),
 				})
 			}
 		}
@@ -43,23 +42,23 @@ func ParseOrderBookSummary(raw map[string]any) OrderBookSummary {
 		for _, ask := range rawAsks {
 			if askMap, ok := ask.(map[string]any); ok {
 				asks = append(asks, OrderSummary{
-					Size:  fmt.Sprintf("%v", askMap["size"]),
-					Price: fmt.Sprintf("%v", askMap["price"]),
+					Size:  stringFromAny(askMap["size"]),
+					Price: stringFromAny(askMap["price"]),
 				})
 			}
 		}
 	}
 
 	return OrderBookSummary{
-		Market:       fmt.Sprintf("%v", raw["market"]),
-		AssetID:      fmt.Sprintf("%v", raw["asset_id"]),
-		Timestamp:    fmt.Sprintf("%v", raw["timestamp"]),
-		MinOrderSize: fmt.Sprintf("%v", raw["min_order_size"]),
+		Market:       stringFromAny(raw["market"]),
+		AssetID:      stringFromAny(raw["asset_id"]),
+		Timestamp:    stringFromAny(raw["timestamp"]),
+		MinOrderSize: stringFromAny(raw["min_order_size"]),
 		NegRisk:      toBool(raw["neg_risk"]),
-		TickSize:     fmt.Sprintf("%v", raw["tick_size"]),
+		TickSize:     stringFromAny(raw["tick_size"]),
 		Bids:         bids,
 		Asks:         asks,
-		Hash:         fmt.Sprintf("%v", raw["hash"]),
+		Hash:         stringFromAny(raw["hash"]),
 	}
 }
 
