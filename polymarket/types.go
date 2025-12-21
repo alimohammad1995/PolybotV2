@@ -1,6 +1,9 @@
 package polymarket
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type OrderType string
 
@@ -103,4 +106,56 @@ type ContractConfig struct {
 type SignedOrder struct {
 	Order     Order
 	Signature string
+}
+
+type stringOrNumber string
+
+func (s stringOrNumber) String() string {
+	return string(s)
+}
+
+func (s *stringOrNumber) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*s = ""
+		return nil
+	}
+	if data[0] == '"' {
+		var str string
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		*s = stringOrNumber(str)
+		return nil
+	}
+	var num json.Number
+	if err := json.Unmarshal(data, &num); err != nil {
+		return fmt.Errorf("stringOrNumber: %w", err)
+	}
+	*s = stringOrNumber(num.String())
+	return nil
+}
+
+type Trade struct {
+	AssetID string      `json:"asset_id"`
+	Market  string      `json:"market"`
+	Side    string      `json:"side"`
+	Price   json.Number `json:"price"`
+	Size    json.Number `json:"size"`
+}
+
+type TradesResponse struct {
+	Data []Trade `json:"data"`
+}
+
+type ActiveOrder struct {
+	ID           string      `json:"id"`
+	Market       string      `json:"market"`
+	AssetID      string      `json:"asset_id"`
+	Price        json.Number `json:"price"`
+	OriginalSize json.Number `json:"original_size"`
+	SizeMatched  json.Number `json:"size_matched"`
+}
+
+type ActiveOrdersResponse struct {
+	Data []ActiveOrder `json:"data"`
 }

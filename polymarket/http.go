@@ -60,10 +60,56 @@ func (h *HTTPClient) Request(method, url string, headers map[string]string, body
 	}
 
 	var out any
-	if err := json.Unmarshal(payload, &out); err != nil {
+	if err := decodeJSON(payload, &out); err != nil {
 		return string(payload), nil
 	}
 	return out, nil
+}
+
+func (h *HTTPClient) RequestInto(method, url string, headers map[string]string, body any, out any) error {
+	reqBody, contentType, err := buildRequestBody(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(method, url, reqBody)
+	if err != nil {
+		return err
+	}
+	applyDefaultHeaders(req, method)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyReader := io.Reader(resp.Body)
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		bodyReader = gz
+	}
+	payload, err := io.ReadAll(bodyReader)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("polymarket: http %d: %s", resp.StatusCode, string(payload))
+	}
+	if out == nil {
+		return nil
+	}
+	return decodeJSON(payload, out)
 }
 
 func buildRequestBody(body any) (io.Reader, string, error) {
@@ -90,4 +136,10 @@ func applyDefaultHeaders(req *http.Request, method string) {
 	if method == http.MethodGet {
 		req.Header.Set("Accept-Encoding", "gzip")
 	}
+}
+
+func decodeJSON(payload []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	return decoder.Decode(out)
 }

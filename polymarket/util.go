@@ -122,6 +122,9 @@ func toBool(value any) bool {
 		return strings.EqualFold(v, "true")
 	case float64:
 		return v != 0
+	case json.Number:
+		parsed, err := v.Float64()
+		return err == nil && parsed != 0
 	case int:
 		return v != 0
 	default:

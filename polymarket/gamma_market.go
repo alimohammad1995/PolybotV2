@@ -89,7 +89,9 @@ func (g *GammaMarket) GetMarketBySlug(slug string) (*GammaMarketSummary, error) 
 	}
 
 	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
 		return nil, err
 	}
 	market := GammaMarketSummaryFromDict(payload)

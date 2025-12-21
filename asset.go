@@ -8,6 +8,16 @@ import (
 	"sync"
 )
 
+type assetTradeEvent struct {
+	EventType string      `json:"event_type"`
+	Type      string      `json:"type"`
+	AssetID   string      `json:"asset_id"`
+	Market    string      `json:"market"`
+	Price     json.Number `json:"price"`
+	Size      json.Number `json:"size"`
+	Side      string      `json:"side"`
+}
+
 func InitAssets(client *PolymarketClient) {
 	var wg sync.WaitGroup
 
@@ -15,12 +25,12 @@ func InitAssets(client *PolymarketClient) {
 		wg.Add(1)
 		go func(market string) {
 			defer wg.Done()
-			resp, err := client.GetClient().GetTrades(map[string]string{"market": market})
+			resp, err := client.GetClient().GetTradesTyped(map[string]string{"market": market})
 			if err != nil {
 				log.Printf("init assets: get trades failed for %s: %v", market, err)
 				return
 			}
-			applyTradesToInventory(resp)
+			applyTradesToInventory(resp.Data)
 		}(marketID)
 	}
 
@@ -28,53 +38,41 @@ func InitAssets(client *PolymarketClient) {
 }
 
 func UpdateAsset(msg []byte) {
-	var payload any
-	if err := json.Unmarshal(msg, &payload); err != nil {
+	if len(msg) == 0 {
+		return
+	}
+	if msg[0] == '[' {
+		var messages []assetTradeEvent
+		if err := decodeJSON(msg, &messages); err != nil {
+			return
+		}
+		for _, event := range messages {
+			applyAssetTradeEvent(event)
+		}
 		return
 	}
 
-	switch v := payload.(type) {
-	case map[string]any:
-		applyAssetTradeEvent(v)
-	case []any:
-		for _, item := range v {
-			if msgMap, ok := item.(map[string]any); ok {
-				applyAssetTradeEvent(msgMap)
-			}
-		}
+	var event assetTradeEvent
+	if err := decodeJSON(msg, &event); err != nil {
+		return
 	}
+	applyAssetTradeEvent(event)
 }
 
-func applyTradesToInventory(payload any) {
-	raw, ok := payload.(map[string]any)
-	if !ok {
-		log.Printf("init assets: invalid trades response: %T", payload)
-		return
-	}
-	data, ok := raw["data"].([]any)
-	if !ok {
-		log.Printf("init assets: missing trades data: %T", raw["data"])
-		return
-	}
-
-	for _, item := range data {
-		trade, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		assetID := stringFromAny(trade["asset_id"])
+func applyTradesToInventory(data []polymarket.Trade) {
+	for _, trade := range data {
+		assetID := trade.AssetID
 		if assetID == "" || assetID == "<nil>" {
 			continue
 		}
-		marketID := stringFromAny(trade["market"])
+		marketID := trade.Market
 
-		priceVal, okPrice := parseFloat(trade["price"])
-		sizeVal, okSize := parseFloat(trade["size"])
+		priceVal, okPrice := parseFloat(trade.Price)
+		sizeVal, okSize := parseFloat(trade.Size)
 		if !okPrice || !okSize {
 			continue
 		}
-		side := stringFromAny(trade["side"])
+		side := trade.Side
 
 		if side == string(polymarket.SideBuy) {
 			AddAsset(assetID, marketID, sizeVal, priceVal)
@@ -82,28 +80,28 @@ func applyTradesToInventory(payload any) {
 	}
 }
 
-func applyAssetTradeEvent(msg map[string]any) {
-	eventType := strings.ToLower(stringFromAny(msg["event_type"]))
+func applyAssetTradeEvent(msg assetTradeEvent) {
+	eventType := strings.ToLower(msg.EventType)
 	if eventType == "" || eventType == "<nil>" {
-		eventType = strings.ToLower(stringFromAny(msg["type"]))
+		eventType = strings.ToLower(msg.Type)
 	}
 	if eventType != "trade" {
 		return
 	}
 
-	assetID := stringFromAny(msg["asset_id"])
+	assetID := msg.AssetID
 	if assetID == "" || assetID == "<nil>" {
 		return
 	}
-	marketID := stringFromAny(msg["market"])
+	marketID := msg.Market
 
-	priceVal, okPrice := parseFloat(msg["price"])
-	sizeVal, okSize := parseFloat(msg["size"])
+	priceVal, okPrice := parseFloat(msg.Price)
+	sizeVal, okSize := parseFloat(msg.Size)
 	if !okPrice || !okSize {
 		return
 	}
 
-	side := stringFromAny(msg["side"])
+	side := msg.Side
 	if side != string(polymarket.SideBuy) {
 		return
 	}

@@ -20,6 +20,26 @@ type MarketOrderBook struct {
 	Bids []float64
 }
 
+type orderBookLevel struct {
+	Price json.Number `json:"price"`
+	Size  json.Number `json:"size"`
+}
+
+type priceChange struct {
+	AssetID string      `json:"asset_id"`
+	Side    string      `json:"side"`
+	Price   json.Number `json:"price"`
+	Size    json.Number `json:"size"`
+}
+
+type orderBookMessage struct {
+	EventType    string           `json:"event_type"`
+	AssetID      string           `json:"asset_id"`
+	Bids         []orderBookLevel `json:"bids"`
+	Asks         []orderBookLevel `json:"asks"`
+	PriceChanges []priceChange    `json:"price_changes"`
+}
+
 func GetTop(tokenID string) []*MarketOrder {
 	res := make([]*MarketOrder, 2)
 	book, ok := OrderBook[tokenID]
@@ -59,28 +79,28 @@ func PrintTop(tokenID string) {
 }
 
 func UpdateOrderBook(message []byte) []string {
-	var payload any
-	if err := json.Unmarshal(message, &payload); err != nil {
+	if len(message) == 0 {
 		return nil
 	}
-
-	switch v := payload.(type) {
-	case map[string]any:
-		return applyOrderBookEvent(v)
-	case []any:
-		assetIDs := make([]string, 0, len(v)*2)
-
-		for _, item := range v {
-			if msg, ok := item.(map[string]any); ok {
-				if updatedAssetIds := applyOrderBookEvent(msg); len(updatedAssetIds) > 0 {
-					assetIDs = append(assetIDs, updatedAssetIds...)
-				}
+	if message[0] == '[' {
+		var messages []orderBookMessage
+		if err := decodeJSON(message, &messages); err != nil {
+			return nil
+		}
+		assetIDs := make([]string, 0, len(messages)*2)
+		for _, msg := range messages {
+			if updatedAssetIds := applyOrderBookEvent(msg); len(updatedAssetIds) > 0 {
+				assetIDs = append(assetIDs, updatedAssetIds...)
 			}
 		}
 		return assetIDs
 	}
 
-	return nil
+	var msg orderBookMessage
+	if err := decodeJSON(message, &msg); err != nil {
+		return nil
+	}
+	return applyOrderBookEvent(msg)
 }
 
 func DeleteOrderBook(assetIDs []string) {
@@ -97,8 +117,8 @@ func PrintOrderBook() {
 	}
 }
 
-func applyOrderBookEvent(msg map[string]any) []string {
-	eventType := stringFromAny(msg["event_type"])
+func applyOrderBookEvent(msg orderBookMessage) []string {
+	eventType := msg.EventType
 	switch eventType {
 	case "book":
 		return applyBookSnapshot(msg)
@@ -109,8 +129,8 @@ func applyOrderBookEvent(msg map[string]any) []string {
 	return nil
 }
 
-func applyBookSnapshot(msg map[string]any) []string {
-	assetID := stringFromAny(msg["asset_id"])
+func applyBookSnapshot(msg orderBookMessage) []string {
+	assetID := msg.AssetID
 	if assetID == "" || assetID == "<nil>" {
 		return nil
 	}
@@ -120,27 +140,19 @@ func applyBookSnapshot(msg map[string]any) []string {
 		Bids: make([]float64, 101),
 	}
 
-	if bids, ok := msg["bids"].([]any); ok {
-		for _, bid := range bids {
-			if bidMap, ok := bid.(map[string]any); ok {
-				price, okPrice := parseFloat(bidMap["price"])
-				size, okSize := parseFloat(bidMap["size"])
-				if okPrice && okSize {
-					book.Bids[PriceToInt(price)] = size
-				}
-			}
+	for _, bid := range msg.Bids {
+		price, okPrice := parseFloat(bid.Price)
+		size, okSize := parseFloat(bid.Size)
+		if okPrice && okSize {
+			book.Bids[PriceToInt(price)] = size
 		}
 	}
 
-	if asks, ok := msg["asks"].([]any); ok {
-		for _, ask := range asks {
-			if askMap, ok := ask.(map[string]any); ok {
-				price, okPrice := parseFloat(askMap["price"])
-				size, okSize := parseFloat(askMap["size"])
-				if okPrice && okSize {
-					book.Asks[PriceToInt(price)] = size
-				}
-			}
+	for _, ask := range msg.Asks {
+		price, okPrice := parseFloat(ask.Price)
+		size, okSize := parseFloat(ask.Size)
+		if okPrice && okSize {
+			book.Asks[PriceToInt(price)] = size
 		}
 	}
 
@@ -148,27 +160,21 @@ func applyBookSnapshot(msg map[string]any) []string {
 	return []string{assetID}
 }
 
-func applyPriceChange(msg map[string]any) []string {
-	priceChanges, ok := msg["price_changes"].([]any)
-	if !ok {
+func applyPriceChange(msg orderBookMessage) []string {
+	if len(msg.PriceChanges) == 0 {
 		return nil
 	}
-	assetIDs := make([]string, 0, len(priceChanges))
+	assetIDs := make([]string, 0, len(msg.PriceChanges))
 
-	for _, change := range priceChanges {
-		changeMap, ok := change.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		assetID := stringFromAny(changeMap["asset_id"])
+	for _, change := range msg.PriceChanges {
+		assetID := change.AssetID
 		if assetID == "" || assetID == "<nil>" {
 			continue
 		}
 
-		side := stringFromAny(changeMap["side"])
-		price, okPrice := parseFloat(changeMap["price"])
-		size, okSize := parseFloat(changeMap["size"])
+		side := change.Side
+		price, okPrice := parseFloat(change.Price)
+		size, okSize := parseFloat(change.Size)
 		if !okPrice || !okSize {
 			continue
 		}

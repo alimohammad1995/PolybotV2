@@ -23,6 +23,45 @@ type ClobClient struct {
 	feeRates  map[string]int
 }
 
+type orderSummaryWire struct {
+	Price stringOrNumber `json:"price"`
+	Size  stringOrNumber `json:"size"`
+}
+
+type orderBookSummaryWire struct {
+	Market       stringOrNumber     `json:"market"`
+	AssetID      stringOrNumber     `json:"asset_id"`
+	Timestamp    stringOrNumber     `json:"timestamp"`
+	Bids         []orderSummaryWire `json:"bids"`
+	Asks         []orderSummaryWire `json:"asks"`
+	MinOrderSize stringOrNumber     `json:"min_order_size"`
+	NegRisk      bool               `json:"neg_risk"`
+	TickSize     stringOrNumber     `json:"tick_size"`
+	Hash         stringOrNumber     `json:"hash"`
+}
+
+func (o orderBookSummaryWire) toSummary() OrderBookSummary {
+	bids := make([]OrderSummary, len(o.Bids))
+	for i, bid := range o.Bids {
+		bids[i] = OrderSummary{Price: bid.Price.String(), Size: bid.Size.String()}
+	}
+	asks := make([]OrderSummary, len(o.Asks))
+	for i, ask := range o.Asks {
+		asks[i] = OrderSummary{Price: ask.Price.String(), Size: ask.Size.String()}
+	}
+	return OrderBookSummary{
+		Market:       o.Market.String(),
+		AssetID:      o.AssetID.String(),
+		Timestamp:    o.Timestamp.String(),
+		Bids:         bids,
+		Asks:         asks,
+		MinOrderSize: o.MinOrderSize.String(),
+		NegRisk:      o.NegRisk,
+		TickSize:     o.TickSize.String(),
+		Hash:         o.Hash.String(),
+	}
+}
+
 func NewClobClient(key string, signatureType uint8, funder string) (*ClobClient, error) {
 	var signer *Signer
 	var err error
@@ -149,6 +188,31 @@ func (c *ClobClient) GetTrades(params map[string]string) (any, error) {
 	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
 }
 
+func (c *ClobClient) GetTradesTyped(params map[string]string) (TradesResponse, error) {
+	if err := c.assertLevel2(); err != nil {
+		return TradesResponse{}, err
+	}
+	values := url.Values{}
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	query := values.Encode()
+	reqPath := TradesEndpoint
+	if query != "" {
+		reqPath += "?" + query
+	}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return TradesResponse{}, err
+	}
+	var resp TradesResponse
+	if err := c.http.RequestInto("GET", c.clobHost+reqPath, headers, nil, &resp); err != nil {
+		return TradesResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *ClobClient) GetActiveOrders(params map[string]string) (any, error) {
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
@@ -168,6 +232,31 @@ func (c *ClobClient) GetActiveOrders(params map[string]string) (any, error) {
 		return nil, err
 	}
 	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
+}
+
+func (c *ClobClient) GetActiveOrdersTyped(params map[string]string) (ActiveOrdersResponse, error) {
+	if err := c.assertLevel2(); err != nil {
+		return ActiveOrdersResponse{}, err
+	}
+	values := url.Values{}
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	query := values.Encode()
+	reqPath := OrdersEndpoint
+	if query != "" {
+		reqPath += "?" + query
+	}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return ActiveOrdersResponse{}, err
+	}
+	var resp ActiveOrdersResponse
+	if err := c.http.RequestInto("GET", c.clobHost+reqPath, headers, nil, &resp); err != nil {
+		return ActiveOrdersResponse{}, err
+	}
+	return resp, nil
 }
 
 func (c *ClobClient) GetPositions(user string, params map[string]string) (any, error) {
@@ -192,15 +281,11 @@ func (c *ClobClient) GetMarkets(nextCursor string) (any, error) {
 }
 
 func (c *ClobClient) GetOrderBook(tokenID string) (OrderBookSummary, error) {
-	resp, err := c.http.Request("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetOrderBookEndpoint, tokenID), nil, nil)
-	if err != nil {
+	var book orderBookSummaryWire
+	if err := c.http.RequestInto("GET", fmt.Sprintf("%s%s?token_id=%s", c.clobHost, GetOrderBookEndpoint, tokenID), nil, nil, &book); err != nil {
 		return OrderBookSummary{}, err
 	}
-	raw, ok := resp.(map[string]any)
-	if !ok {
-		return OrderBookSummary{}, errors.New("invalid orderbook response")
-	}
-	return ParseOrderBookSummary(raw), nil
+	return book.toSummary(), nil
 }
 
 func (c *ClobClient) GetOrderBooks(tokenIDs []string) (map[string]OrderBookSummary, error) {
@@ -208,22 +293,14 @@ func (c *ClobClient) GetOrderBooks(tokenIDs []string) (map[string]OrderBookSumma
 	for _, tokenID := range tokenIDs {
 		body = append(body, map[string]string{"token_id": tokenID})
 	}
-	resp, err := c.http.Request("POST", c.clobHost+GetOrderBooksEndpoint, nil, body)
-	if err != nil {
+	var rawList []orderBookSummaryWire
+	if err := c.http.RequestInto("POST", c.clobHost+GetOrderBooksEndpoint, nil, body, &rawList); err != nil {
 		return nil, err
 	}
-	rawList, ok := resp.([]any)
-	if !ok {
-		return nil, errors.New("invalid order books response")
-	}
 	books := make(map[string]OrderBookSummary, len(rawList))
-	for _, item := range rawList {
-		raw, ok := item.(map[string]any)
-		if !ok {
-			return nil, errors.New("invalid order book entry")
-		}
-		book := ParseOrderBookSummary(raw)
-		books[book.AssetID] = book
+	for _, book := range rawList {
+		summary := book.toSummary()
+		books[summary.AssetID] = summary
 	}
 	return books, nil
 }
