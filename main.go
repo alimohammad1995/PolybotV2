@@ -2,6 +2,7 @@ package main
 
 import (
 	"Polybot/polymarket"
+	"fmt"
 	"log"
 	"os"
 
@@ -35,7 +36,8 @@ func run(market string) {
 	marketWS := polymarket.NewWebSocketOrderBook(
 		polymarket.MarketChannel,
 		func(msg []byte) {
-			_ = UpdateOrderBook(msg)
+			assetIds := UpdateOrderBook(msg)
+			fmt.Println(assetIds)
 		},
 	)
 

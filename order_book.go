@@ -16,8 +16,10 @@ type MarketOrder struct {
 }
 
 type MarketOrderBook struct {
-	Asks []float64
-	Bids []float64
+	Asks    []float64
+	Bids    []float64
+	bestBid int
+	bestAsk int
 }
 
 type orderBookLevel struct {
@@ -47,26 +49,11 @@ func GetTop(tokenID string) []*MarketOrder {
 		return res
 	}
 
-	bestBid := -1
-	bestAsk := 101
-
-	for i := 0; i < len(book.Bids); i++ {
-		bidIndex := i
-		askIndex := len(book.Asks) - i - 1
-
-		if book.Bids[bidIndex] > 0 {
-			bestBid = bidIndex
-		}
-		if book.Asks[askIndex] > 0 {
-			bestAsk = askIndex
-		}
+	if book.bestBid >= 0 {
+		res[0] = &MarketOrder{Price: book.bestBid, Size: book.Bids[book.bestBid]}
 	}
-
-	if bestBid >= 0 {
-		res[0] = &MarketOrder{Price: bestBid, Size: book.Bids[bestBid]}
-	}
-	if bestAsk < 101 {
-		res[1] = &MarketOrder{Price: bestAsk, Size: book.Asks[bestAsk]}
+	if book.bestAsk >= 0 && book.bestAsk < len(book.Asks) {
+		res[1] = &MarketOrder{Price: book.bestAsk, Size: book.Asks[book.bestAsk]}
 	}
 
 	return res
@@ -136,23 +123,31 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 	}
 
 	book := &MarketOrderBook{
-		Asks: make([]float64, 101),
-		Bids: make([]float64, 101),
+		Asks:    make([]float64, 101),
+		Bids:    make([]float64, 101),
+		bestBid: -1,
+		bestAsk: 101,
 	}
 
 	for _, bid := range msg.Bids {
-		price, okPrice := parseFloat(bid.Price)
+		priceIndex, okPrice := parsePriceIndex(bid.Price)
 		size, okSize := parseFloat(bid.Size)
 		if okPrice && okSize {
-			book.Bids[PriceToInt(price)] = size
+			book.Bids[priceIndex] = size
+			if size > 0 && priceIndex > book.bestBid {
+				book.bestBid = priceIndex
+			}
 		}
 	}
 
 	for _, ask := range msg.Asks {
-		price, okPrice := parseFloat(ask.Price)
+		priceIndex, okPrice := parsePriceIndex(ask.Price)
 		size, okSize := parseFloat(ask.Size)
 		if okPrice && okSize {
-			book.Asks[PriceToInt(price)] = size
+			book.Asks[priceIndex] = size
+			if size > 0 && (book.bestAsk < 0 || priceIndex < book.bestAsk) {
+				book.bestAsk = priceIndex
+			}
 		}
 	}
 
@@ -173,7 +168,7 @@ func applyPriceChange(msg orderBookMessage) []string {
 		}
 
 		side := change.Side
-		price, okPrice := parseFloat(change.Price)
+		priceIndex, okPrice := parsePriceIndex(change.Price)
 		size, okSize := parseFloat(change.Size)
 		if !okPrice || !okSize {
 			continue
@@ -185,9 +180,23 @@ func applyPriceChange(msg orderBookMessage) []string {
 		}
 
 		if side == string(polymarket.SideBuy) {
-			book.Bids[PriceToInt(price)] = size
+			book.Bids[priceIndex] = size
+			if size > 0 {
+				if priceIndex > book.bestBid {
+					book.bestBid = priceIndex
+				}
+			} else if priceIndex == book.bestBid {
+				book.bestBid = scanBestBid(book)
+			}
 		} else if side == string(polymarket.SideSell) {
-			book.Asks[PriceToInt(price)] = size
+			book.Asks[priceIndex] = size
+			if size > 0 {
+				if book.bestAsk < 0 || priceIndex < book.bestAsk {
+					book.bestAsk = priceIndex
+				}
+			} else if priceIndex == book.bestAsk {
+				book.bestAsk = scanBestAsk(book)
+			}
 		}
 
 		assetIDs = append(assetIDs, assetID)
@@ -225,6 +234,78 @@ func parseFloat(value any) (float64, bool) {
 	}
 }
 
+func parsePriceIndex(value any) (int, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		return priceIndexFromString(v.String())
+	case string:
+		return priceIndexFromString(v)
+	case float64:
+		return PriceToInt(v), true
+	case float32:
+		return PriceToInt(float64(v)), true
+	default:
+		return 0, false
+	}
+}
+
+func priceIndexFromString(value string) (int, bool) {
+	if value == "" || value == "<nil>" {
+		return 0, false
+	}
+	intPart := 0
+	frac := 0
+	fracDigits := 0
+	i := 0
+	n := len(value)
+	for i < n && value[i] != '.' {
+		ch := value[i]
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		intPart = intPart*10 + int(ch-'0')
+		i++
+	}
+	if i == n {
+		return intPart * 100, true
+	}
+	if value[i] != '.' {
+		return 0, false
+	}
+	i++
+	for i < n && fracDigits < 2 {
+		ch := value[i]
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		frac = frac*10 + int(ch-'0')
+		fracDigits++
+		i++
+	}
+	if fracDigits == 1 {
+		frac *= 10
+	}
+	return intPart*100 + frac, true
+}
+
 func PriceToInt(value float64) int {
 	return int(value * 100)
+}
+
+func scanBestBid(book *MarketOrderBook) int {
+	for i := len(book.Bids) - 1; i >= 0; i-- {
+		if book.Bids[i] > 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+func scanBestAsk(book *MarketOrderBook) int {
+	for i := 0; i < len(book.Asks); i++ {
+		if book.Asks[i] > 0 {
+			return i
+		}
+	}
+	return len(book.Asks)
 }
