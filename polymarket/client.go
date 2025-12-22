@@ -167,7 +167,7 @@ func (c *ClobClient) GetOrder(orderID string) (any, error) {
 	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
 }
 
-func (c *ClobClient) GetTrades(params map[string]string) (any, error) {
+func (c *ClobClient) GetTradesTyped(params map[string]string) (*TradesResponse, error) {
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
 	}
@@ -175,45 +175,20 @@ func (c *ClobClient) GetTrades(params map[string]string) (any, error) {
 	for key, value := range params {
 		values.Set(key, value)
 	}
-	query := values.Encode()
-	reqPath := TradesEndpoint
-	if query != "" {
-		reqPath += "?" + query
-	}
-	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: TradesEndpoint, Body: nil}
+	reqPath := TradesEndpoint + "?" + values.Encode()
 	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
 	if err != nil {
 		return nil, err
-	}
-	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
-}
-
-func (c *ClobClient) GetTradesTyped(params map[string]string) (TradesResponse, error) {
-	if err := c.assertLevel2(); err != nil {
-		return TradesResponse{}, err
-	}
-	values := url.Values{}
-	for key, value := range params {
-		values.Set(key, value)
-	}
-	query := values.Encode()
-	reqPath := TradesEndpoint
-	if query != "" {
-		reqPath += "?" + query
-	}
-	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
-	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
-	if err != nil {
-		return TradesResponse{}, err
 	}
 	var resp TradesResponse
 	if err := c.http.RequestInto("GET", c.clobHost+reqPath, headers, nil, &resp); err != nil {
-		return TradesResponse{}, err
+		return nil, err
 	}
-	return resp, nil
+	return &resp, nil
 }
 
-func (c *ClobClient) GetActiveOrders(params map[string]string) (any, error) {
+func (c *ClobClient) GetActiveOrdersTyped(params map[string]string) (*ActiveOrdersResponse, error) {
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
 	}
@@ -221,42 +196,17 @@ func (c *ClobClient) GetActiveOrders(params map[string]string) (any, error) {
 	for key, value := range params {
 		values.Set(key, value)
 	}
-	query := values.Encode()
-	reqPath := OrdersEndpoint
-	if query != "" {
-		reqPath += "?" + query
-	}
-	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
+	reqArgs := RequestArgs{Method: "GET", RequestPath: OrdersEndpoint, Body: nil}
+	reqPath := OrdersEndpoint + "?" + values.Encode()
 	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
 	if err != nil {
 		return nil, err
-	}
-	return c.http.Request("GET", c.clobHost+reqPath, headers, nil)
-}
-
-func (c *ClobClient) GetActiveOrdersTyped(params map[string]string) (ActiveOrdersResponse, error) {
-	if err := c.assertLevel2(); err != nil {
-		return ActiveOrdersResponse{}, err
-	}
-	values := url.Values{}
-	for key, value := range params {
-		values.Set(key, value)
-	}
-	query := values.Encode()
-	reqPath := OrdersEndpoint
-	if query != "" {
-		reqPath += "?" + query
-	}
-	reqArgs := RequestArgs{Method: "GET", RequestPath: reqPath, Body: nil}
-	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
-	if err != nil {
-		return ActiveOrdersResponse{}, err
 	}
 	var resp ActiveOrdersResponse
 	if err := c.http.RequestInto("GET", c.clobHost+reqPath, headers, nil, &resp); err != nil {
-		return ActiveOrdersResponse{}, err
+		return nil, err
 	}
-	return resp, nil
+	return &resp, nil
 }
 
 func (c *ClobClient) GetPositions(user string, params map[string]string) (any, error) {
