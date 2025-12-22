@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+const eps = 1e-9
+
 var mu = &sync.Mutex{}
 
 var ActiveMarketIDs = make(map[string]bool)
@@ -97,4 +99,40 @@ func AddMarket(marketInfo *polymarket.GammaMarketSummary) {
 
 	TokenToTokenRival[tokenYes] = tokenNo
 	TokenToTokenRival[tokenNo] = tokenYes
+}
+
+func IsActiveMarket(marketID string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return ActiveMarketIDs[marketID]
+}
+
+func GetMarketInfo(marketID string) *polymarket.GammaMarketSummary {
+	mu.Lock()
+	defer mu.Unlock()
+	return MarketIDToMarketInfo[marketID]
+}
+
+func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
+	mu.Lock()
+	defer mu.Unlock()
+	asset := Inventory[assetID]
+	if asset == nil {
+		return 0, 0, 0
+	}
+	return asset.Size, asset.AveragePrice, asset.Size * asset.AveragePrice
+}
+
+func OrderMatches(orderID string, price int, qty float64) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	order := Orders[orderID]
+	if order == nil {
+		return false
+	}
+	remaining := order.OriginalSize - order.MatchedSize
+	if remaining < 0 {
+		remaining = 0
+	}
+	return order.Price == price && absFloat(remaining-qty) < eps
 }

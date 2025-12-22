@@ -16,10 +16,10 @@ type MarketOrder struct {
 }
 
 type MarketOrderBook struct {
-	Asks    []float64
-	Bids    []float64
-	bestBid int
-	bestAsk int
+	Asks    []float64 // Price => Size
+	Bids    []float64 // Price => Size
+	BestBid int       // Price
+	BestAsk int       // Price
 }
 
 type orderBookLevel struct {
@@ -49,11 +49,11 @@ func GetTop(tokenID string) []*MarketOrder {
 		return res
 	}
 
-	if book.bestBid >= 0 {
-		res[0] = &MarketOrder{Price: book.bestBid, Size: book.Bids[book.bestBid]}
+	if book.BestBid >= 0 {
+		res[0] = &MarketOrder{Price: book.BestBid, Size: book.Bids[book.BestBid]}
 	}
-	if book.bestAsk >= 0 && book.bestAsk < len(book.Asks) {
-		res[1] = &MarketOrder{Price: book.bestAsk, Size: book.Asks[book.bestAsk]}
+	if book.BestAsk >= 0 && book.BestAsk < len(book.Asks) {
+		res[1] = &MarketOrder{Price: book.BestAsk, Size: book.Asks[book.BestAsk]}
 	}
 
 	return res
@@ -125,8 +125,8 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 	book := &MarketOrderBook{
 		Asks:    make([]float64, 101),
 		Bids:    make([]float64, 101),
-		bestBid: -1,
-		bestAsk: 101,
+		BestBid: -1,
+		BestAsk: 101,
 	}
 
 	for _, bid := range msg.Bids {
@@ -134,8 +134,8 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 		size, okSize := parseFloat(bid.Size)
 		if okPrice && okSize {
 			book.Bids[priceIndex] = size
-			if size > 0 && priceIndex > book.bestBid {
-				book.bestBid = priceIndex
+			if size > 0 && priceIndex > book.BestBid {
+				book.BestBid = priceIndex
 			}
 		}
 	}
@@ -145,8 +145,8 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 		size, okSize := parseFloat(ask.Size)
 		if okPrice && okSize {
 			book.Asks[priceIndex] = size
-			if size > 0 && (book.bestAsk < 0 || priceIndex < book.bestAsk) {
-				book.bestAsk = priceIndex
+			if size > 0 && (book.BestAsk < 0 || priceIndex < book.BestAsk) {
+				book.BestAsk = priceIndex
 			}
 		}
 	}
@@ -182,20 +182,20 @@ func applyPriceChange(msg orderBookMessage) []string {
 		if side == string(polymarket.SideBuy) {
 			book.Bids[priceIndex] = size
 			if size > 0 {
-				if priceIndex > book.bestBid {
-					book.bestBid = priceIndex
+				if priceIndex > book.BestBid {
+					book.BestBid = priceIndex
 				}
-			} else if priceIndex == book.bestBid {
-				book.bestBid = scanBestBid(book)
+			} else if priceIndex == book.BestBid {
+				book.BestBid = scanBestBid(book)
 			}
 		} else if side == string(polymarket.SideSell) {
 			book.Asks[priceIndex] = size
 			if size > 0 {
-				if book.bestAsk < 0 || priceIndex < book.bestAsk {
-					book.bestAsk = priceIndex
+				if book.BestAsk < 0 || priceIndex < book.BestAsk {
+					book.BestAsk = priceIndex
 				}
-			} else if priceIndex == book.bestAsk {
-				book.bestAsk = scanBestAsk(book)
+			} else if priceIndex == book.BestAsk {
+				book.BestAsk = scanBestAsk(book)
 			}
 		}
 
