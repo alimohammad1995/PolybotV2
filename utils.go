@@ -5,13 +5,6 @@ import (
 	"strconv"
 )
 
-func absFloat(value float64) float64 {
-	if value < 0 {
-		return -value
-	}
-	return value
-}
-
 func parseFloat(value any) (float64, bool) {
 	switch v := value.(type) {
 	case float64:

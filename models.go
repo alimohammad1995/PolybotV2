@@ -139,17 +139,3 @@ func GetOrderIDByAsset(assetID string) []string {
 	defer mu.Unlock()
 	return AssetToOrderIDs[assetID]
 }
-
-func OrderMatches(orderID string, price int, qty float64) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	order := Orders[orderID]
-	if order == nil {
-		return false
-	}
-	remaining := order.OriginalSize - order.MatchedSize
-	if remaining < 0 {
-		remaining = 0
-	}
-	return order.Price == price && absFloat(remaining-qty) < eps
-}
