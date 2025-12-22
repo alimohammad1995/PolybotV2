@@ -8,6 +8,8 @@ import (
 
 var mu = &sync.Mutex{}
 
+var ActiveMarketIDs = make(map[string]bool)
+
 var Orders = make(map[string]*Order)
 var MarketToOrderIDs = make(map[string][]string)
 var AssetToOrderIDs = make(map[string][]string)

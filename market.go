@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-var ActiveMarkets = make(map[string]bool)
-
 func GetMarketName(market string, index int) (string, int64) {
 	now := time.Now().Unix()
 	ts := now - now%IntervalSeconds + int64(IntervalSeconds*index)
@@ -35,6 +33,7 @@ func Listener(market string, gamma *polymarket.GammaMarket, marketWS *polymarket
 				}
 
 				AddMarket(marketInfo)
+				SetActiveMarkets(market, gamma)
 
 				tokenYes := marketInfo.ClobTokenIDs[0]
 				tokenNo := marketInfo.ClobTokenIDs[1]
@@ -72,4 +71,17 @@ func Listener(market string, gamma *polymarket.GammaMarket, marketWS *polymarket
 			}
 		}
 	}()
+}
+
+func SetActiveMarkets(market string, gamma *polymarket.GammaMarket) {
+	ActiveMarketIDs = make(map[string]bool)
+
+	for i := 0; i < LookAhead; i++ {
+		marketName, _ := GetMarketName(market, i)
+		marketInfo, err := gamma.GetMarketBySlug(marketName)
+		if err != nil {
+			continue
+		}
+		ActiveMarketIDs[marketInfo.MarketID] = true
+	}
 }

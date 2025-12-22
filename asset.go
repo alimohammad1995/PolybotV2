@@ -21,7 +21,7 @@ type assetTradeEvent struct {
 func InitAssets(client *PolymarketClient) {
 	var wg sync.WaitGroup
 
-	for marketID := range ActiveMarkets {
+	for marketID := range ActiveMarketIDs {
 		wg.Add(1)
 		go func(market string) {
 			defer wg.Done()
@@ -37,26 +37,15 @@ func InitAssets(client *PolymarketClient) {
 	wg.Wait()
 }
 
-func UpdateAsset(msg []byte) {
+func UpdateAsset(msg []byte) []string {
 	if len(msg) == 0 {
-		return
+		return nil
 	}
-	if msg[0] == '[' {
-		var messages []assetTradeEvent
-		if err := decodeJSON(msg, &messages); err != nil {
-			return
-		}
-		for _, event := range messages {
-			applyAssetTradeEvent(event)
-		}
-		return
-	}
-
 	var event assetTradeEvent
 	if err := decodeJSON(msg, &event); err != nil {
-		return
+		return nil
 	}
-	applyAssetTradeEvent(event)
+	return applyAssetTradeEvent(event)
 }
 
 func applyTradesToInventory(data []polymarket.Trade) {
@@ -80,31 +69,32 @@ func applyTradesToInventory(data []polymarket.Trade) {
 	}
 }
 
-func applyAssetTradeEvent(msg assetTradeEvent) {
+func applyAssetTradeEvent(msg assetTradeEvent) []string {
 	eventType := strings.ToLower(msg.EventType)
 	if eventType == "" || eventType == "<nil>" {
 		eventType = strings.ToLower(msg.Type)
 	}
 	if eventType != "trade" {
-		return
+		return nil
 	}
 
 	assetID := msg.AssetID
 	if assetID == "" || assetID == "<nil>" {
-		return
+		return nil
 	}
 	marketID := msg.Market
 
 	priceVal, okPrice := parseFloat(msg.Price)
 	sizeVal, okSize := parseFloat(msg.Size)
 	if !okPrice || !okSize {
-		return
+		return nil
 	}
 
 	side := msg.Side
 	if side != string(polymarket.SideBuy) {
-		return
+		return nil
 	}
 
 	AddAsset(assetID, marketID, sizeVal, priceVal)
+	return []string{assetID}
 }

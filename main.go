@@ -2,7 +2,6 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"fmt"
 	"log"
 	"os"
 
@@ -21,7 +20,9 @@ func run(market string) {
 		log.Fatal("Error creating Polymarket client", err)
 	}
 
-	//orderExecutor := NewOrderExecutor(client)
+	SetActiveMarkets(market, gamma)
+
+	strategy := NewStrategy(client)
 
 	InitAssets(client)
 	InitOrders(client)
@@ -29,7 +30,8 @@ func run(market string) {
 	userWS := polymarket.NewWebSocketOrderBook(
 		polymarket.UserChannel,
 		func(msg []byte) {
-			UpdateAsset(msg)
+			assetIds := UpdateAsset(msg)
+			strategy.OnAssetUpdate(assetIds)
 		},
 	)
 
@@ -37,7 +39,7 @@ func run(market string) {
 		polymarket.MarketChannel,
 		func(msg []byte) {
 			assetIds := UpdateOrderBook(msg)
-			fmt.Println(assetIds)
+			strategy.OnAssetUpdate(assetIds)
 		},
 	)
 
