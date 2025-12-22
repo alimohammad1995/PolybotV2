@@ -1,21 +1,17 @@
 package main
 
 const (
-	// Discounts are in price*100 units (e.g., 2.0 == 0.02).
 	DBase  = 2
 	DLate  = 1
 	DFinal = 0
 
-	MaxUnmatched = 30.0
+	MaxUnmatched    = 30.0
+	MaxSharePerSize = 100
 
-	LadderLevels = 4
-	LadderStep   = 1
-	MinPrice     = 1
-	MaxPrice     = 100
-	MaxBaseBid   = 99
-
-	StopNewUnmatchedSec = 3 * 60
-	PauseSec            = 60
+	MinimumStartWaitingSec = 10
+	MinPrice               = 5
+	MaxPrice               = 100
+	StopNewUnmatchedSec    = 3 * 60
 )
 
 var LevelSize = []float64{5, 5, 5, 5}

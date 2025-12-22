@@ -92,7 +92,12 @@ func (s *Strategy) handle(marketID string) {
 
 	now := time.Now().Unix()
 	timeLeft := marketInfo.EndDateTS - now
+	timeStarted := now - marketInfo.StartDateTS
 	if timeLeft <= 0 {
+		return
+	}
+
+	if timeStarted >= 0 && timeStarted <= MinimumStartWaitingSec {
 		return
 	}
 
@@ -135,8 +140,8 @@ func (s *Strategy) handle(marketID string) {
 		}
 	}
 
-	allowUp := neededDownSize <= MaxUnmatched
-	allowDown := neededUpSize <= MaxUnmatched
+	allowUp := neededDownSize <= MaxUnmatched && upQty >= MaxSharePerSize
+	allowDown := neededUpSize <= MaxUnmatched && downQty >= MaxSharePerSize
 
 	if timeLeft <= StopNewUnmatchedSec {
 		if neededDownSize > 0 {
@@ -154,15 +159,13 @@ func (s *Strategy) handle(marketID string) {
 	}
 
 	if allowUp && upBestBidAsk[0] != nil {
-		upHighestBidPrice := upBestBidAsk[0].Price
-		s.syncBids(marketID, upToken, upHighestBidPrice, timeLeft)
+		s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
 	} else {
 		s.cancelSide(upToken)
 	}
 
 	if allowDown && downBestBidAsk[0] != nil {
-		downHighestBidPrice := downBestBidAsk[0].Price
-		s.syncBids(marketID, downToken, downHighestBidPrice, timeLeft)
+		s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
 	} else {
 		s.cancelSide(downToken)
 	}
