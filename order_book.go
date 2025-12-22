@@ -4,11 +4,13 @@ import (
 	"Polybot/polymarket"
 	"encoding/json"
 	"log"
-	"strconv"
+	"sync"
 )
 
-// OrderBook TokenID => MarketOrderBook
-var OrderBook = make(map[string]*MarketOrderBook)
+var orderMu = &sync.RWMutex{}
+
+// orderBook TokenID => MarketOrderBook
+var orderBook = make(map[string]*MarketOrderBook)
 
 type MarketOrder struct {
 	Price int
@@ -42,17 +44,20 @@ type orderBookMessage struct {
 	PriceChanges []priceChange    `json:"price_changes"`
 }
 
-func GetTop(tokenID string) []*MarketOrder {
+func GetBestBidAsk(tokenID string) []*MarketOrder {
+	orderMu.RLock()
+	defer orderMu.RUnlock()
+
 	res := make([]*MarketOrder, 2)
-	book, ok := OrderBook[tokenID]
+	book, ok := orderBook[tokenID]
 	if !ok || book == nil {
 		return res
 	}
 
-	if book.BestBid >= 0 {
+	if book.BestBid >= 1 && book.BestBid <= 99 {
 		res[0] = &MarketOrder{Price: book.BestBid, Size: book.Bids[book.BestBid]}
 	}
-	if book.BestAsk >= 0 && book.BestAsk < len(book.Asks) {
+	if book.BestAsk >= 1 && book.BestAsk <= 99 {
 		res[1] = &MarketOrder{Price: book.BestAsk, Size: book.Asks[book.BestAsk]}
 	}
 
@@ -60,7 +65,7 @@ func GetTop(tokenID string) []*MarketOrder {
 }
 
 func PrintTop(tokenID string) {
-	orders := GetTop(tokenID)
+	orders := GetBestBidAsk(tokenID)
 	jsonOrders, _ := json.Marshal(orders)
 	log.Println(tokenID, "=>", string(jsonOrders))
 }
@@ -91,20 +96,18 @@ func UpdateOrderBook(message []byte) []string {
 }
 
 func DeleteOrderBook(assetIDs []string) {
-	for _, id := range assetIDs {
-		delete(OrderBook, id)
-	}
-}
+	orderMu.Lock()
+	defer orderMu.Unlock()
 
-func PrintOrderBook() {
-	for tokenID, book := range OrderBook {
-		log.Println(tokenID)
-		log.Println("ASKS: ", book.Asks)
-		log.Println("BIDS: ", book.Bids)
+	for _, id := range assetIDs {
+		delete(orderBook, id)
 	}
 }
 
 func applyOrderBookEvent(msg orderBookMessage) []string {
+	orderMu.Lock()
+	defer orderMu.Unlock()
+
 	eventType := msg.EventType
 	switch eventType {
 	case "book":
@@ -130,7 +133,7 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 	}
 
 	for _, bid := range msg.Bids {
-		priceIndex, okPrice := parsePriceIndex(bid.Price)
+		priceIndex, okPrice := priceIndexFromString(bid.Price.String())
 		size, okSize := parseFloat(bid.Size)
 		if okPrice && okSize {
 			book.Bids[priceIndex] = size
@@ -141,7 +144,7 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 	}
 
 	for _, ask := range msg.Asks {
-		priceIndex, okPrice := parsePriceIndex(ask.Price)
+		priceIndex, okPrice := priceIndexFromString(ask.Price.String())
 		size, okSize := parseFloat(ask.Size)
 		if okPrice && okSize {
 			book.Asks[priceIndex] = size
@@ -151,7 +154,7 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 		}
 	}
 
-	OrderBook[assetID] = book
+	orderBook[assetID] = book
 	return []string{assetID}
 }
 
@@ -168,13 +171,13 @@ func applyPriceChange(msg orderBookMessage) []string {
 		}
 
 		side := change.Side
-		priceIndex, okPrice := parsePriceIndex(change.Price)
+		priceIndex, okPrice := priceIndexFromString(change.Price.String())
 		size, okSize := parseFloat(change.Size)
 		if !okPrice || !okSize {
 			continue
 		}
 
-		book, ok := OrderBook[assetID]
+		book, ok := orderBook[assetID]
 		if !ok {
 			continue
 		}
@@ -203,89 +206,6 @@ func applyPriceChange(msg orderBookMessage) []string {
 	}
 
 	return assetIDs
-}
-
-func parseFloat(value any) (float64, bool) {
-	switch v := value.(type) {
-	case float64:
-		return v, true
-	case float32:
-		return float64(v), true
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case uint:
-		return float64(v), true
-	case uint64:
-		return float64(v), true
-	case uint32:
-		return float64(v), true
-	case json.Number:
-		f, err := v.Float64()
-		return f, err == nil
-	case string:
-		f, err := strconv.ParseFloat(v, 64)
-		return f, err == nil
-	default:
-		return 0, false
-	}
-}
-
-func parsePriceIndex(value any) (int, bool) {
-	switch v := value.(type) {
-	case json.Number:
-		return priceIndexFromString(v.String())
-	case string:
-		return priceIndexFromString(v)
-	case float64:
-		return PriceToInt(v), true
-	case float32:
-		return PriceToInt(float64(v)), true
-	default:
-		return 0, false
-	}
-}
-
-func priceIndexFromString(value string) (int, bool) {
-	if value == "" || value == "<nil>" {
-		return 0, false
-	}
-	intPart := 0
-	frac := 0
-	fracDigits := 0
-	i := 0
-	n := len(value)
-	for i < n && value[i] != '.' {
-		ch := value[i]
-		if ch < '0' || ch > '9' {
-			return 0, false
-		}
-		intPart = intPart*10 + int(ch-'0')
-		i++
-	}
-	if i == n {
-		return intPart * 100, true
-	}
-	if value[i] != '.' {
-		return 0, false
-	}
-	i++
-	for i < n && fracDigits < 2 {
-		ch := value[i]
-		if ch < '0' || ch > '9' {
-			return 0, false
-		}
-		frac = frac*10 + int(ch-'0')
-		fracDigits++
-		i++
-	}
-	if fracDigits == 1 {
-		frac *= 10
-	}
-	return intPart*100 + frac, true
 }
 
 func PriceToInt(value float64) int {

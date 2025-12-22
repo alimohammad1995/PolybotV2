@@ -8,6 +8,7 @@ import (
 
 const eps = 1e-9
 
+// TODO use different mutex
 var mu = &sync.Mutex{}
 
 var ActiveMarketIDs = make(map[string]bool)
@@ -15,7 +16,7 @@ var ActiveMarketIDs = make(map[string]bool)
 var Orders = make(map[string]*Order)
 var MarketToOrderIDs = make(map[string][]string)
 var AssetToOrderIDs = make(map[string][]string)
-var AssetPriceToOrderIDs = make(map[string][]string)
+var AssetPriceToOrderID = make(map[string]string)
 
 var Inventory = make(map[string]*Asset)
 
@@ -55,20 +56,22 @@ func AddOrder(order *Order) {
 	AssetToOrderIDs[order.AssetID] = append(AssetToOrderIDs[order.AssetID], order.ID)
 
 	assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
-	AssetPriceToOrderIDs[assetPrice] = append(AssetPriceToOrderIDs[assetPrice], order.ID)
+	AssetPriceToOrderID[assetPrice] = order.ID
 }
 
-func DeleteOrder(orderID string) {
+func DeleteOrder(orderIDs ...string) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	delete(AssetToOrderIDs, Orders[orderID].AssetID)
-	delete(MarketToOrderIDs, Orders[orderID].MarketID)
+	for _, orderID := range orderIDs {
+		delete(AssetToOrderIDs, Orders[orderID].AssetID)
+		delete(MarketToOrderIDs, Orders[orderID].MarketID)
 
-	assetPrice := fmt.Sprintf("%s_%d", Orders[orderID].AssetID, Orders[orderID].Price)
-	delete(AssetPriceToOrderIDs, assetPrice)
+		assetPrice := fmt.Sprintf("%s_%d", Orders[orderID].AssetID, Orders[orderID].Price)
+		delete(AssetPriceToOrderID, assetPrice)
 
-	delete(Orders, orderID)
+		delete(Orders, orderID)
+	}
 }
 
 func AddAsset(assetID, marketID string, size float64, price float64) {
@@ -121,6 +124,20 @@ func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
 		return 0, 0, 0
 	}
 	return asset.Size, asset.AveragePrice, asset.Size * asset.AveragePrice
+}
+
+func GetOrderAtPrice(assetID string, price int) *Order {
+	assetPrice := fmt.Sprintf("%s_%d", assetID, price)
+	mu.Lock()
+	defer mu.Unlock()
+	orderID := AssetPriceToOrderID[assetPrice]
+	return Orders[orderID]
+}
+
+func GetOrderIDByAsset(assetID string) []string {
+	mu.Lock()
+	defer mu.Unlock()
+	return AssetToOrderIDs[assetID]
 }
 
 func OrderMatches(orderID string, price int, qty float64) bool {

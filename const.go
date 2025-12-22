@@ -1,7 +1,8 @@
 package main
 
 const (
-	IntervalSeconds = 900
+	IntervalSeconds            = 900
+	PolymarketMinimumOrderSize = 5
 )
 
 const (

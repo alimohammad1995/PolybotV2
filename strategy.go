@@ -4,7 +4,6 @@ import (
 	"Polybot/polymarket"
 	"log"
 	"math"
-	"sync"
 	"time"
 )
 
@@ -14,15 +13,6 @@ type Strategy struct {
 	client   *PolymarketClient
 	executor *OrderExecutor
 	markets  chan string
-	stateMu  sync.Mutex
-	states   map[string]*MarketState
-}
-
-type MarketState struct {
-	mu          sync.Mutex
-	pausedUntil int64
-	ordersYes   []string
-	ordersNo    []string
 }
 
 func NewStrategy(client *PolymarketClient) *Strategy {
@@ -30,7 +20,6 @@ func NewStrategy(client *PolymarketClient) *Strategy {
 		client:   client,
 		executor: NewOrderExecutor(client),
 		markets:  make(chan string, Workers),
-		states:   make(map[string]*MarketState),
 	}
 	strategy.Run()
 	return strategy
@@ -74,306 +63,181 @@ func (s *Strategy) handle(marketID string) {
 	}
 
 	marketInfo := GetMarketInfo(marketID)
-	if marketInfo == nil || len(marketInfo.ClobTokenIDs) < 2 {
+	if marketInfo == nil {
 		return
 	}
 
-	state := s.getState(marketID)
 	now := time.Now().Unix()
-	tleft := marketInfo.EndDateTS - now
-	if tleft <= 0 {
+	timeLeft := marketInfo.EndDateTS - now
+	if timeLeft <= 0 {
 		return
 	}
 
-	state.mu.Lock()
-	defer state.mu.Unlock()
+	upToken := marketInfo.ClobTokenIDs[0]
+	downToken := marketInfo.ClobTokenIDs[1]
 
-	if now < state.pausedUntil {
-		return
-	}
+	upQty, upAvg, _ := GetAssetPosition(upToken)
+	downQty, downAvg, _ := GetAssetPosition(downToken)
 
-	yesToken := marketInfo.ClobTokenIDs[0]
-	noToken := marketInfo.ClobTokenIDs[1]
+	pairs := math.Min(upQty, downQty)
+	neededDownSize := upQty - pairs
+	neededUpSize := downQty - pairs
 
-	yesQty, yesAvg, _ := GetAssetPosition(yesToken)
-	noQty, noAvg, _ := GetAssetPosition(noToken)
+	upBestBidAsk := GetBestBidAsk(upToken)
+	downBestBidAsk := GetBestBidAsk(downToken)
 
-	pairs := math.Min(yesQty, noQty)
-	unmatchedYes := yesQty - pairs
-	unmatchedNo := noQty - pairs
+	if neededDownSize >= PolymarketMinimumOrderSize && downBestBidAsk[1] != nil {
+		askDownPrice, askDownSize := downBestBidAsk[1].Price, downBestBidAsk[1].Size
 
-	askYes := bestAsk(yesToken)
-	askNo := bestAsk(noToken)
-
-	if unmatchedYes > 0 {
-		maxNo := maxPriceForMissing("NO", tleft, yesAvg, noAvg)
-		if validAsk(askNo) && askNo <= maxNo {
-			qty := minFloat(unmatchedYes, availableAtAsk(noToken, askNo))
-			if qty > 0 {
-				s.placeLimitBuy(marketID, noToken, askNo, qty)
+		if askDownPrice <= maxPriceForMissing(DOWN, timeLeft, upAvg, downAvg) {
+			if askDownSize >= neededDownSize {
+				s.placeLimitBuy(marketID, downToken, askDownPrice, neededDownSize)
+			} else {
+				buySize := math.Min(neededDownSize-PolymarketMinimumOrderSize, askDownSize)
+				s.placeLimitBuy(marketID, downToken, askDownPrice, buySize)
 			}
 		}
 	}
 
-	if unmatchedNo > 0 {
-		maxYes := maxPriceForMissing("YES", tleft, yesAvg, noAvg)
-		if validAsk(askYes) && askYes <= maxYes {
-			qty := minFloat(unmatchedNo, availableAtAsk(yesToken, askYes))
-			if qty > 0 {
-				s.placeLimitBuy(marketID, yesToken, askYes, qty)
+	if neededUpSize > 0 && upBestBidAsk[1] != nil {
+		askUpPrice, askUpSize := upBestBidAsk[1].Price, upBestBidAsk[1].Size
+
+		if askUpPrice <= maxPriceForMissing(UP, timeLeft, upAvg, downAvg) {
+			if askUpSize >= neededUpSize {
+				s.placeLimitBuy(marketID, downToken, askUpPrice, neededUpSize)
+			} else {
+				buySize := math.Min(neededUpSize-PolymarketMinimumOrderSize, askUpSize)
+				s.placeLimitBuy(marketID, downToken, askUpPrice, buySize)
 			}
 		}
 	}
 
-	allowYes := true
-	allowNo := true
+	allowUp := neededDownSize <= MaxUnmatched
+	allowDown := neededUpSize <= MaxUnmatched
 
-	if unmatchedYes >= MaxUnmatched {
-		allowYes = false
-	}
-	if unmatchedNo >= MaxUnmatched {
-		allowNo = false
-	}
-
-	if !canStartNewUnmatched(tleft) {
-		if unmatchedYes > 0 {
-			allowYes = false
-			allowNo = true
-		} else if unmatchedNo > 0 {
-			allowNo = false
-			allowYes = true
+	if timeLeft <= StopNewUnmatchedSec {
+		if neededDownSize > 0 {
+			allowUp = false
+		} else if neededUpSize > 0 {
+			allowDown = false
 		} else {
-			allowYes = false
-			allowNo = false
+			allowUp = false
+			allowDown = false
 		}
 	}
 
-	baseYes := bestBid(yesToken)
-	baseNo := bestBid(noToken)
+	if !allowUp && !allowDown {
+		return
+	}
 
-	if allowYes && validBaseBid(baseYes) {
-		for level := 0; level < LadderLevels; level++ {
-			price := baseYes - level*LadderStep
-			qty := LevelSize[level]
-			if price >= MinPrice && quoteDepthAllowed("YES", price, tleft) {
-				s.ensureBid(state, "YES", level, marketID, yesToken, price, qty)
+	if allowUp && upBestBidAsk[0] != nil {
+		upHighestBidPrice := upBestBidAsk[0].Price
+		for i, size := range LevelSize {
+			price := upHighestBidPrice - i
+			if price >= MinPrice && quoteDepthAllowed(upToken, price, timeLeft) {
+				s.ensureBid(marketID, upToken, price, size)
 			} else {
-				s.cancelLevel(state, "YES", level)
+				s.cancelLevel(upToken, price)
 			}
 		}
 	} else {
-		s.cancelSide(state, "YES")
+		s.cancelSide(upToken)
 	}
 
-	if allowNo && validBaseBid(baseNo) {
-		for level := 0; level < LadderLevels; level++ {
-			price := baseNo - level*LadderStep
-			qty := LevelSize[level]
-			if price >= MinPrice && quoteDepthAllowed("NO", price, tleft) {
-				s.ensureBid(state, "NO", level, marketID, noToken, price, qty)
+	if allowDown && downBestBidAsk[0] != nil {
+		downHighestBidPrice := downBestBidAsk[0].Price
+
+		for i, size := range LevelSize {
+			price := downHighestBidPrice - i
+			if price >= MinPrice && quoteDepthAllowed(downToken, price, timeLeft) {
+				s.ensureBid(marketID, downToken, price, size)
 			} else {
-				s.cancelLevel(state, "NO", level)
+				s.cancelLevel(downToken, price)
 			}
 		}
 	} else {
-		s.cancelSide(state, "NO")
+		s.cancelSide(downToken)
 	}
 }
 
-func (s *Strategy) getState(marketID string) *MarketState {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-
-	state := s.states[marketID]
-	if state == nil {
-		state = &MarketState{
-			ordersYes: make([]string, LadderLevels),
-			ordersNo:  make([]string, LadderLevels),
-		}
-		s.states[marketID] = state
+func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64) {
+	if qty < PolymarketMinimumOrderSize {
+		return
 	}
-	return state
-}
-
-func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64) string {
-	if qty <= 0 {
-		return ""
-	}
-	resp, err := s.executor.BuyLimit(tokenID, float64(price)/100.0, qty, polymarket.OrderTypeGTC)
+	orderID, err := s.executor.BuyLimit(tokenID, float64(price)/100.0, qty, polymarket.OrderTypeGTC)
 	if err != nil {
 		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
-		return ""
-	}
-
-	orderID := orderIDFromResponse(resp)
-	if orderID != "" {
-		AddOrder(&Order{
-			ID:           orderID,
-			MarketID:     marketID,
-			AssetID:      tokenID,
-			OriginalSize: qty,
-			MatchedSize:  0,
-			Price:        price,
-		})
-	}
-	return orderID
-}
-
-func (s *Strategy) ensureBid(state *MarketState, outcome string, level int, marketID, tokenID string, price int, qty float64) {
-	orderID := s.orderIDAtLevel(state, outcome, level)
-	if orderID != "" && OrderMatches(orderID, price, qty) {
 		return
 	}
-	if orderID != "" {
-		s.cancelOrder(orderID)
-	}
 
-	newID := s.placeLimitBuy(marketID, tokenID, price, qty)
-	s.setOrderIDAtLevel(state, outcome, level, newID)
+	AddOrder(&Order{
+		ID:           orderID,
+		MarketID:     marketID,
+		AssetID:      tokenID,
+		OriginalSize: qty,
+		MatchedSize:  0,
+		Price:        price,
+	})
 }
 
-func (s *Strategy) cancelLevel(state *MarketState, outcome string, level int) {
-	orderID := s.orderIDAtLevel(state, outcome, level)
-	if orderID == "" {
+func (s *Strategy) ensureBid(marketID, tokenID string, price int, qty float64) {
+	order := GetOrderAtPrice(tokenID, price)
+	if order != nil && order.OriginalSize < qty {
+		s.cancelOrder(order.ID)
+	}
+
+	s.placeLimitBuy(marketID, tokenID, price, qty)
+}
+
+func (s *Strategy) cancelLevel(tokenID string, price int) {
+	order := GetOrderAtPrice(tokenID, price)
+	if order == nil {
 		return
 	}
-	s.cancelOrder(orderID)
-	s.setOrderIDAtLevel(state, outcome, level, "")
+	s.cancelOrder(order.ID)
 }
 
-func (s *Strategy) cancelSide(state *MarketState, outcome string) {
-	for level := 0; level < LadderLevels; level++ {
-		s.cancelLevel(state, outcome, level)
+func (s *Strategy) cancelSide(tokenID string) {
+	orderIds := GetOrderIDByAsset(tokenID)
+	if err := s.executor.CancelOrders(orderIds); err != nil {
+		log.Printf("cancel order failed: orderID=%s err=%v", orderIds, err)
+		return
 	}
+	DeleteOrder(orderIds...)
 }
 
 func (s *Strategy) cancelOrder(orderID string) {
-	if orderID == "" {
-		return
-	}
-	if _, err := s.client.client.CancelOrders([]string{orderID}); err != nil {
+	if err := s.executor.CancelOrders([]string{orderID}); err != nil {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderID, err)
 		return
 	}
 	DeleteOrder(orderID)
 }
 
-func (s *Strategy) orderIDAtLevel(state *MarketState, outcome string, level int) string {
-	if outcome == "YES" {
-		return state.ordersYes[level]
-	}
-	return state.ordersNo[level]
-}
-
-func (s *Strategy) setOrderIDAtLevel(state *MarketState, outcome string, level int, orderID string) {
-	if outcome == "YES" {
-		state.ordersYes[level] = orderID
-		return
-	}
-	state.ordersNo[level] = orderID
-}
-
-func orderIDFromResponse(resp any) string {
-	if resp == nil {
-		return ""
-	}
-	switch v := resp.(type) {
-	case map[string]any:
-		if id := sanitizeID(stringFromAny(v["id"])); id != "" {
-			return id
-		}
-		if id := sanitizeID(stringFromAny(v["order_id"])); id != "" {
-			return id
-		}
-		if id := sanitizeID(stringFromAny(v["orderID"])); id != "" {
-			return id
-		}
-		if order, ok := v["order"].(map[string]any); ok {
-			if id := sanitizeID(stringFromAny(order["id"])); id != "" {
-				return id
-			}
-		}
-	}
-	return ""
-}
-
-func sanitizeID(id string) string {
-	if id == "" || id == "<nil>" {
-		return ""
-	}
-	return id
-}
-
-func discountTarget(tleft int64) float64 {
+func discountTarget(tleft int64) int {
 	switch {
-	case tleft > 5*60:
+	case tleft > 10*60:
 		return DBase
 	case tleft > 2*60:
-		return DMid
-	case tleft > 60:
 		return DLate
 	default:
 		return DFinal
 	}
 }
 
-func maxPriceForMissing(missingOutcome string, tleft int64, avgYes, avgNo float64) int {
-	limit := float64(MaxPrice) - discountTarget(tleft)
-	var max float64
-	if missingOutcome == "NO" {
-		max = limit - avgYes
-	} else {
-		max = limit - avgNo
+func maxPriceForMissing(side Side, timeLeft int64, avgUp, avgDown float64) int {
+	limit := MaxPrice - discountTarget(timeLeft)
+
+	switch side {
+	case DOWN:
+		return limit - int(math.Ceil(avgUp))
+	case UP:
+		return limit - int(math.Ceil(avgDown))
 	}
-	return int(math.Floor(max))
+
+	return 0
 }
 
-func canStartNewUnmatched(tleft int64) bool {
-	return tleft > StopNewUnmatchedSec
-}
-
-func quoteDepthAllowed(outcome string, price int, tleft int64) bool {
+func quoteDepthAllowed(tokenID string, price int, tleft int64) bool {
 	return true
-}
-
-func bestBid(tokenID string) int {
-	book := OrderBook[tokenID]
-	if book == nil {
-		return -1
-	}
-	return book.BestBid
-}
-
-func bestAsk(tokenID string) int {
-	book := OrderBook[tokenID]
-	if book == nil {
-		return -1
-	}
-	if book.BestAsk < 0 || book.BestAsk >= len(book.Asks) {
-		return -1
-	}
-	return book.BestAsk
-}
-
-func availableAtAsk(tokenID string, price int) float64 {
-	book := OrderBook[tokenID]
-	if book == nil || price < 0 || price >= len(book.Asks) {
-		return 0
-	}
-	return book.Asks[price]
-}
-
-func validAsk(price int) bool {
-	return price >= MinPrice && price <= MaxPrice
-}
-
-func validBaseBid(price int) bool {
-	return price >= MinPrice && price < MaxBaseBid
-}
-
-func minFloat(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }
