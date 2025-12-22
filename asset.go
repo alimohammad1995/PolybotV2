@@ -64,7 +64,21 @@ func applyTradesToInventory(data []polymarket.Trade) {
 		side := trade.Side
 
 		if side == string(polymarket.SideBuy) {
+			qtyBefore, avgBefore, costBefore := GetAssetPosition(assetID)
 			AddAsset(assetID, marketID, sizeVal, priceVal)
+			qtyAfter, avgAfter, costAfter := GetAssetPosition(assetID)
+			log.Printf(
+				"inventory init: asset=%s market=%s size=%.4f qty=%.4f->%.4f avg=%.4f->%.4f cost=%.4f->%.4f",
+				assetID,
+				marketID,
+				sizeVal,
+				qtyBefore,
+				qtyAfter,
+				avgBefore,
+				avgAfter,
+				costBefore,
+				costAfter,
+			)
 		}
 	}
 }
@@ -95,6 +109,21 @@ func applyAssetTradeEvent(msg assetTradeEvent) []string {
 		return nil
 	}
 
+	qtyBefore, avgBefore, costBefore := GetAssetPosition(assetID)
 	AddAsset(assetID, marketID, sizeVal, priceVal)
+	qtyAfter, avgAfter, costAfter := GetAssetPosition(assetID)
+	log.Printf(
+		"inventory update: asset=%s market=%s size=%.4f qty=%.4f->%.4f avg=%.4f->%.4f cost=%.4f->%.4f",
+		assetID,
+		marketID,
+		sizeVal,
+		qtyBefore,
+		qtyAfter,
+		avgBefore,
+		avgAfter,
+		costBefore,
+		costAfter,
+	)
+
 	return []string{assetID}
 }

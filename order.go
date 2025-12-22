@@ -47,5 +47,14 @@ func applyOrders(data []polymarket.ActiveOrder) {
 			MatchedSize:  matchedSize,
 			Price:        PriceToInt(priceVal),
 		})
+		log.Printf(
+			"order init: id=%s market=%s asset=%s price=%.4f size=%.4f matched=%.4f",
+			orderID,
+			order.Market,
+			order.AssetID,
+			priceVal,
+			origSize,
+			matchedSize,
+		)
 	}
 }
