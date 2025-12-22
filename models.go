@@ -8,14 +8,18 @@ import (
 
 const eps = 1e-9
 
-// TODO use different mutex
-var mu = &sync.Mutex{}
+var (
+	ordersMu    = &sync.RWMutex{}
+	inventoryMu = &sync.RWMutex{}
+	marketMu    = &sync.RWMutex{}
+	activeMu    = &sync.RWMutex{}
+)
 
 var ActiveMarketIDs = make(map[string]bool)
 
 var Orders = make(map[string]*Order)
-var MarketToOrderIDs = make(map[string][]string)
-var AssetToOrderIDs = make(map[string][]string)
+var MarketToOrderIDs = make(map[string]map[string]bool)
+var AssetToOrderIDs = make(map[string]map[string]bool)
 var AssetPriceToOrderID = make(map[string]string)
 
 var Inventory = make(map[string]*Asset)
@@ -47,36 +51,60 @@ func (asset *Asset) Update(price int, quantity float64) {
 }
 
 func AddOrder(order *Order) {
-	mu.Lock()
-	defer mu.Unlock()
+	if order == nil || order.ID == "" {
+		return
+	}
+	ordersMu.Lock()
+	defer ordersMu.Unlock()
 
 	Orders[order.ID] = order
 
-	MarketToOrderIDs[order.MarketID] = append(MarketToOrderIDs[order.MarketID], order.ID)
-	AssetToOrderIDs[order.AssetID] = append(AssetToOrderIDs[order.AssetID], order.ID)
+	if _, ok := MarketToOrderIDs[order.MarketID]; !ok {
+		MarketToOrderIDs[order.MarketID] = make(map[string]bool)
+	}
+	MarketToOrderIDs[order.MarketID][order.ID] = true
+
+	if _, ok := AssetToOrderIDs[order.AssetID]; !ok {
+		AssetToOrderIDs[order.AssetID] = make(map[string]bool)
+	}
+	AssetToOrderIDs[order.AssetID][order.ID] = true
 
 	assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
 	AssetPriceToOrderID[assetPrice] = order.ID
 }
 
 func DeleteOrder(orderIDs ...string) {
-	mu.Lock()
-	defer mu.Unlock()
+	if len(orderIDs) == 0 {
+		return
+	}
+	ordersMu.Lock()
+	defer ordersMu.Unlock()
 
 	for _, orderID := range orderIDs {
-		delete(AssetToOrderIDs, Orders[orderID].AssetID)
-		delete(MarketToOrderIDs, Orders[orderID].MarketID)
+		order := Orders[orderID]
+		if order == nil {
+			continue
+		}
 
-		assetPrice := fmt.Sprintf("%s_%d", Orders[orderID].AssetID, Orders[orderID].Price)
-		delete(AssetPriceToOrderID, assetPrice)
+		if assetSet, ok := AssetToOrderIDs[order.AssetID]; ok {
+			delete(assetSet, orderID)
+		}
+		if marketSet, ok := MarketToOrderIDs[order.MarketID]; ok {
+			delete(marketSet, orderID)
+		}
+
+		assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
+		if AssetPriceToOrderID[assetPrice] == orderID {
+			delete(AssetPriceToOrderID, assetPrice)
+		}
 
 		delete(Orders, orderID)
 	}
 }
 
 func AddAsset(assetID, marketID string, size float64, price float64) {
-	mu.Lock()
-	defer mu.Unlock()
+	inventoryMu.Lock()
+	defer inventoryMu.Unlock()
 
 	asset := Inventory[assetID]
 	if asset == nil {
@@ -88,8 +116,11 @@ func AddAsset(assetID, marketID string, size float64, price float64) {
 }
 
 func AddMarket(marketInfo *polymarket.GammaMarketSummary) {
-	mu.Lock()
-	defer mu.Unlock()
+	if marketInfo == nil {
+		return
+	}
+	marketMu.Lock()
+	defer marketMu.Unlock()
 
 	MarketToMarketID[marketInfo.Slug] = marketInfo.MarketID
 	MarketIDToMarketInfo[marketInfo.MarketID] = marketInfo
@@ -105,20 +136,20 @@ func AddMarket(marketInfo *polymarket.GammaMarketSummary) {
 }
 
 func IsActiveMarket(marketID string) bool {
-	mu.Lock()
-	defer mu.Unlock()
+	activeMu.RLock()
+	defer activeMu.RUnlock()
 	return ActiveMarketIDs[marketID]
 }
 
 func GetMarketInfo(marketID string) *polymarket.GammaMarketSummary {
-	mu.Lock()
-	defer mu.Unlock()
+	marketMu.RLock()
+	defer marketMu.RUnlock()
 	return MarketIDToMarketInfo[marketID]
 }
 
 func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
-	mu.Lock()
-	defer mu.Unlock()
+	inventoryMu.RLock()
+	defer inventoryMu.RUnlock()
 	asset := Inventory[assetID]
 	if asset == nil {
 		return 0, 0, 0
@@ -128,14 +159,62 @@ func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
 
 func GetOrderAtPrice(assetID string, price int) *Order {
 	assetPrice := fmt.Sprintf("%s_%d", assetID, price)
-	mu.Lock()
-	defer mu.Unlock()
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
 	orderID := AssetPriceToOrderID[assetPrice]
 	return Orders[orderID]
 }
 
-func GetOrderIDByAsset(assetID string) []string {
-	mu.Lock()
-	defer mu.Unlock()
-	return AssetToOrderIDs[assetID]
+func GetOrderIDsByAsset(assetID string) []string {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+	set := AssetToOrderIDs[assetID]
+	if len(set) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func GetOrdersByAsset(assetID string) map[int]*Order {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+	set := AssetToOrderIDs[assetID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make(map[int]*Order, len(set))
+	for id := range set {
+		order := Orders[id]
+		if order != nil {
+			out[order.Price] = order
+		}
+	}
+	return out
+}
+
+func GetMarketIDByToken(tokenID string) (string, bool) {
+	marketMu.RLock()
+	defer marketMu.RUnlock()
+	marketID, ok := TokenToMarketID[tokenID]
+	return marketID, ok
+}
+
+func SetActiveMarketsMap(active map[string]bool) {
+	activeMu.Lock()
+	defer activeMu.Unlock()
+	ActiveMarketIDs = active
+}
+
+func GetActiveMarketIDs() []string {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	ids := make([]string, 0, len(ActiveMarketIDs))
+	for id := range ActiveMarketIDs {
+		ids = append(ids, id)
+	}
+	return ids
 }

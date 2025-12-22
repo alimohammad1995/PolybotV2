@@ -74,7 +74,7 @@ func Listener(market string, gamma *polymarket.GammaMarket, marketWS *polymarket
 }
 
 func SetActiveMarkets(market string, gamma *polymarket.GammaMarket) {
-	ActiveMarketIDs = make(map[string]bool)
+	active := make(map[string]bool)
 
 	for i := 0; i < LookAhead; i++ {
 		marketName, _ := GetMarketName(market, i)
@@ -82,6 +82,7 @@ func SetActiveMarkets(market string, gamma *polymarket.GammaMarket) {
 		if err != nil {
 			continue
 		}
-		ActiveMarketIDs[marketInfo.MarketID] = true
+		active[marketInfo.MarketID] = true
 	}
+	SetActiveMarketsMap(active)
 }

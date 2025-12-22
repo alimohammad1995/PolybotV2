@@ -9,7 +9,7 @@ import (
 func InitOrders(client *PolymarketClient) {
 	var wg sync.WaitGroup
 
-	for marketID := range ActiveMarketIDs {
+	for _, marketID := range GetActiveMarketIDs() {
 		wg.Add(1)
 		go func(market string) {
 			defer wg.Done()

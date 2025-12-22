@@ -7,28 +7,14 @@ import (
 
 func parseFloat(value any) (float64, bool) {
 	switch v := value.(type) {
-	case float64:
-		return v, true
-	case float32:
-		return float64(v), true
-	case int:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case uint:
-		return float64(v), true
-	case uint64:
-		return float64(v), true
-	case uint32:
-		return float64(v), true
 	case json.Number:
 		f, err := v.Float64()
 		return f, err == nil
 	case string:
 		f, err := strconv.ParseFloat(v, 64)
 		return f, err == nil
+	case float64:
+		return v, true
 	default:
 		return 0, false
 	}

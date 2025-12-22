@@ -80,11 +80,11 @@ func UpdateOrderBook(message []byte) []string {
 			return nil
 		}
 		assetIDs := make([]string, 0, len(messages)*2)
+		orderMu.Lock()
 		for _, msg := range messages {
-			if updatedAssetIds := applyOrderBookEvent(msg); len(updatedAssetIds) > 0 {
-				assetIDs = append(assetIDs, updatedAssetIds...)
-			}
+			applyOrderBookEventLocked(msg, &assetIDs)
 		}
+		orderMu.Unlock()
 		return assetIDs
 	}
 
@@ -92,7 +92,11 @@ func UpdateOrderBook(message []byte) []string {
 	if err := decodeJSON(message, &msg); err != nil {
 		return nil
 	}
-	return applyOrderBookEvent(msg)
+	assetIDs := make([]string, 0, 2)
+	orderMu.Lock()
+	applyOrderBookEventLocked(msg, &assetIDs)
+	orderMu.Unlock()
+	return assetIDs
 }
 
 func DeleteOrderBook(assetIDs []string) {
@@ -104,22 +108,20 @@ func DeleteOrderBook(assetIDs []string) {
 	}
 }
 
-func applyOrderBookEvent(msg orderBookMessage) []string {
-	orderMu.Lock()
-	defer orderMu.Unlock()
-
-	eventType := msg.EventType
-	switch eventType {
+func applyOrderBookEventLocked(msg orderBookMessage, assetIDs *[]string) {
+	switch msg.EventType {
 	case "book":
-		return applyBookSnapshot(msg)
+		if updated := applyBookSnapshotLocked(msg); len(updated) > 0 {
+			*assetIDs = append(*assetIDs, updated...)
+		}
 	case "price_change":
-		return applyPriceChange(msg)
+		if updated := applyPriceChangeLocked(msg); len(updated) > 0 {
+			*assetIDs = append(*assetIDs, updated...)
+		}
 	}
-
-	return nil
 }
 
-func applyBookSnapshot(msg orderBookMessage) []string {
+func applyBookSnapshotLocked(msg orderBookMessage) []string {
 	assetID := msg.AssetID
 	if assetID == "" || assetID == "<nil>" {
 		return nil
@@ -158,7 +160,7 @@ func applyBookSnapshot(msg orderBookMessage) []string {
 	return []string{assetID}
 }
 
-func applyPriceChange(msg orderBookMessage) []string {
+func applyPriceChangeLocked(msg orderBookMessage) []string {
 	if len(msg.PriceChanges) == 0 {
 		return nil
 	}

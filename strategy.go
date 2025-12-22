@@ -4,44 +4,36 @@ import (
 	"Polybot/polymarket"
 	"log"
 	"math"
+	"sync"
 	"time"
 )
 
 const Workers = 5
 
 type Strategy struct {
-	executor *OrderExecutor
-	markets  chan string
+	executor  *OrderExecutor
+	markets   chan string
+	pending   map[string]bool
+	pendingMu *sync.Mutex
 }
 
 func NewStrategy(client *PolymarketClient) *Strategy {
 	strategy := &Strategy{
-		executor: NewOrderExecutor(client),
-		markets:  make(chan string, Workers),
+		executor:  NewOrderExecutor(client),
+		markets:   make(chan string, Workers),
+		pending:   make(map[string]bool),
+		pendingMu: &sync.Mutex{},
 	}
 	strategy.Run()
 	return strategy
 }
 
 func (s *Strategy) OnOrderBookUpdate(assetID []string) {
-	marketsToCheck := map[string]bool{}
-	for _, id := range assetID {
-		if marketID, ok := TokenToMarketID[id]; ok {
-			marketsToCheck[marketID] = true
-			s.markets <- marketID
-		}
-	}
-
+	s.enqueueMarketsFromAssets(assetID)
 }
 
 func (s *Strategy) OnAssetUpdate(assetID []string) {
-	marketsToCheck := map[string]bool{}
-	for _, id := range assetID {
-		if marketID, ok := TokenToMarketID[id]; ok {
-			marketsToCheck[marketID] = true
-			s.markets <- marketID
-		}
-	}
+	s.enqueueMarketsFromAssets(assetID)
 }
 
 func (s *Strategy) Run() {
@@ -50,9 +42,42 @@ func (s *Strategy) Run() {
 			for {
 				market := <-s.markets
 				s.handle(market)
+				s.markDone(market)
 			}
 		}()
 	}
+}
+
+func (s *Strategy) enqueueMarketsFromAssets(assetIDs []string) {
+	if len(assetIDs) == 0 {
+		return
+	}
+	marketsToCheck := make(map[string]bool)
+	for _, id := range assetIDs {
+		if marketID, ok := GetMarketIDByToken(id); ok {
+			marketsToCheck[marketID] = true
+		}
+	}
+	for marketID := range marketsToCheck {
+		s.enqueueMarket(marketID)
+	}
+}
+
+func (s *Strategy) enqueueMarket(marketID string) {
+	s.pendingMu.Lock()
+	if s.pending[marketID] {
+		s.pendingMu.Unlock()
+		return
+	}
+	s.pending[marketID] = true
+	s.pendingMu.Unlock()
+	s.markets <- marketID
+}
+
+func (s *Strategy) markDone(marketID string) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	delete(s.pending, marketID)
 }
 
 func (s *Strategy) handle(marketID string) {
@@ -130,29 +155,14 @@ func (s *Strategy) handle(marketID string) {
 
 	if allowUp && upBestBidAsk[0] != nil {
 		upHighestBidPrice := upBestBidAsk[0].Price
-		for i, size := range LevelSize {
-			price := upHighestBidPrice - i
-			if price >= MinPrice && quoteDepthAllowed(upToken, price, timeLeft) {
-				s.ensureBid(marketID, upToken, price, size)
-			} else {
-				s.cancelPrice(upToken, price)
-			}
-		}
+		s.syncBids(marketID, upToken, upHighestBidPrice, timeLeft)
 	} else {
 		s.cancelSide(upToken)
 	}
 
 	if allowDown && downBestBidAsk[0] != nil {
 		downHighestBidPrice := downBestBidAsk[0].Price
-
-		for i, size := range LevelSize {
-			price := downHighestBidPrice - i
-			if price >= MinPrice && quoteDepthAllowed(downToken, price, timeLeft) {
-				s.ensureBid(marketID, downToken, price, size)
-			} else {
-				s.cancelPrice(downToken, price)
-			}
-		}
+		s.syncBids(marketID, downToken, downHighestBidPrice, timeLeft)
 	} else {
 		s.cancelSide(downToken)
 	}
@@ -178,29 +188,11 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 	})
 }
 
-func (s *Strategy) ensureBid(marketID, tokenID string, price int, qty float64) {
-	order := GetOrderAtPrice(tokenID, price)
-	if order != nil {
-		if math.Abs(order.OriginalSize-qty) < eps {
-			return
-		}
-
-		s.cancelOrder(order.ID)
-	}
-
-	s.placeLimitBuy(marketID, tokenID, price, qty)
-}
-
-func (s *Strategy) cancelPrice(tokenID string, price int) error {
-	order := GetOrderAtPrice(tokenID, price)
-	if order == nil {
+func (s *Strategy) cancelSide(tokenID string) error {
+	orderIds := GetOrderIDsByAsset(tokenID)
+	if len(orderIds) == 0 {
 		return nil
 	}
-	return s.cancelOrder(order.ID)
-}
-
-func (s *Strategy) cancelSide(tokenID string) error {
-	orderIds := GetOrderIDByAsset(tokenID)
 	if err := s.executor.CancelOrders(orderIds); err != nil {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderIds, err)
 		return err
@@ -209,13 +201,48 @@ func (s *Strategy) cancelSide(tokenID string) error {
 	return nil
 }
 
-func (s *Strategy) cancelOrder(orderID string) error {
-	if err := s.executor.CancelOrders([]string{orderID}); err != nil {
-		log.Printf("cancel order failed: orderID=%s err=%v", orderID, err)
-		return err
+func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft int64) {
+	if highestBid < MinPrice {
+		s.cancelSide(tokenID)
+		return
 	}
-	DeleteOrder(orderID)
-	return nil
+
+	desired := make(map[int]float64, len(LevelSize))
+	for i, size := range LevelSize {
+		price := highestBid - i
+		if price >= MinPrice && quoteDepthAllowed(tokenID, price, timeLeft) {
+			desired[price] = size
+		}
+	}
+	if len(desired) == 0 {
+		s.cancelSide(tokenID)
+		return
+	}
+
+	existing := GetOrdersByAsset(tokenID)
+	cancels := make([]string, 0, len(existing))
+	for price, order := range existing {
+		desiredSize, ok := desired[price]
+		if !ok || math.Abs(order.OriginalSize-desiredSize) >= eps {
+			cancels = append(cancels, order.ID)
+		}
+	}
+
+	if len(cancels) > 0 {
+		if err := s.executor.CancelOrders(cancels); err != nil {
+			log.Printf("cancel order failed: orderID=%s err=%v", cancels, err)
+			return
+		}
+		DeleteOrder(cancels...)
+	}
+
+	for price, size := range desired {
+		order := existing[price]
+		if order != nil && math.Abs(order.OriginalSize-size) < eps {
+			continue
+		}
+		s.placeLimitBuy(marketID, tokenID, price, size)
+	}
 }
 
 func discountTarget(tleft int64) int {
