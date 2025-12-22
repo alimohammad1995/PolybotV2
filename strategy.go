@@ -135,7 +135,7 @@ func (s *Strategy) handle(marketID string) {
 			if price >= MinPrice && quoteDepthAllowed(upToken, price, timeLeft) {
 				s.ensureBid(marketID, upToken, price, size)
 			} else {
-				s.cancelLevel(upToken, price)
+				s.cancelPrice(upToken, price)
 			}
 		}
 	} else {
@@ -150,7 +150,7 @@ func (s *Strategy) handle(marketID string) {
 			if price >= MinPrice && quoteDepthAllowed(downToken, price, timeLeft) {
 				s.ensureBid(marketID, downToken, price, size)
 			} else {
-				s.cancelLevel(downToken, price)
+				s.cancelPrice(downToken, price)
 			}
 		}
 	} else {
@@ -180,36 +180,42 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 
 func (s *Strategy) ensureBid(marketID, tokenID string, price int, qty float64) {
 	order := GetOrderAtPrice(tokenID, price)
-	if order != nil && order.OriginalSize < qty {
+	if order != nil {
+		if math.Abs(order.OriginalSize-qty) < eps {
+			return
+		}
+
 		s.cancelOrder(order.ID)
 	}
 
 	s.placeLimitBuy(marketID, tokenID, price, qty)
 }
 
-func (s *Strategy) cancelLevel(tokenID string, price int) {
+func (s *Strategy) cancelPrice(tokenID string, price int) error {
 	order := GetOrderAtPrice(tokenID, price)
 	if order == nil {
-		return
+		return nil
 	}
-	s.cancelOrder(order.ID)
+	return s.cancelOrder(order.ID)
 }
 
-func (s *Strategy) cancelSide(tokenID string) {
+func (s *Strategy) cancelSide(tokenID string) error {
 	orderIds := GetOrderIDByAsset(tokenID)
 	if err := s.executor.CancelOrders(orderIds); err != nil {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderIds, err)
-		return
+		return err
 	}
 	DeleteOrder(orderIds...)
+	return nil
 }
 
-func (s *Strategy) cancelOrder(orderID string) {
+func (s *Strategy) cancelOrder(orderID string) error {
 	if err := s.executor.CancelOrders([]string{orderID}); err != nil {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderID, err)
-		return
+		return err
 	}
 	DeleteOrder(orderID)
+	return nil
 }
 
 func discountTarget(tleft int64) int {

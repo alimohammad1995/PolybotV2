@@ -2,7 +2,11 @@ package main
 
 import (
 	"Polybot/polymarket"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
+	"time"
 )
 
 type OrderExecutor struct {
@@ -20,6 +24,12 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 		Size:    size,
 		Side:    polymarket.SideBuy,
 	}
+
+	x, _ := json.Marshal(args)
+	_ = string(x)
+	log.Println(string(x))
+	return fmt.Sprintf("%d", time.Now().Nanosecond()), nil
+
 	order, err := e.client.client.CreateOrder(args, nil)
 	if err != nil {
 		return "", err
@@ -39,6 +49,9 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 }
 
 func (e *OrderExecutor) CancelOrders(orderIDs []string) error {
+	log.Println("cancel orders:", orderIDs)
+	return nil
+
 	_, err := e.client.client.CancelOrders(orderIDs)
 	return err
 }
