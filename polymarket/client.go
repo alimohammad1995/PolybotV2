@@ -429,11 +429,8 @@ func (c *ClobClient) CancelOrders(orderIDs []string) (any, error) {
 		return nil, nil
 	}
 	body := orderIDs
-	serialized, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	reqArgs := RequestArgs{Method: "DELETE", RequestPath: CancelOrdersEndpoint, Body: body, SerializedBody: string(serialized)}
+	serialized := strings.Join(orderIDs, ",")
+	reqArgs := RequestArgs{Method: "DELETE", RequestPath: CancelOrdersEndpoint, Body: body, SerializedBody: serialized}
 	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
 	if err != nil {
 		return nil, err
