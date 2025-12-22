@@ -10,14 +10,12 @@ import (
 const Workers = 5
 
 type Strategy struct {
-	client   *PolymarketClient
 	executor *OrderExecutor
 	markets  chan string
 }
 
 func NewStrategy(client *PolymarketClient) *Strategy {
 	strategy := &Strategy{
-		client:   client,
 		executor: NewOrderExecutor(client),
 		markets:  make(chan string, Workers),
 	}
