@@ -14,10 +14,3 @@ const (
 	MaxPrice               = 100
 	StopNewUnmatchedSec    = 3 * 60
 )
-
-type Side string
-
-const (
-	UP   Side = "UP"
-	DOWN Side = "DOWN"
-)

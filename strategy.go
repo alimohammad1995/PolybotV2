@@ -117,7 +117,7 @@ func (s *Strategy) handle(marketID string) {
 	if neededDownSize >= PolymarketMinimumOrderSize && downBestBidAsk[1] != nil {
 		askDownPrice, askDownSize := downBestBidAsk[1].Price, downBestBidAsk[1].Size
 
-		if askDownPrice <= maxPriceForMissing(DOWN, timeLeft, upAvg, downAvg) {
+		if askDownPrice <= maxPriceForMissing(timeLeft, upAvg) {
 			if askDownSize >= neededDownSize {
 				s.placeLimitBuy(marketID, downToken, askDownPrice, neededDownSize)
 			} else {
@@ -130,7 +130,7 @@ func (s *Strategy) handle(marketID string) {
 	if neededUpSize > 0 && upBestBidAsk[1] != nil {
 		askUpPrice, askUpSize := upBestBidAsk[1].Price, upBestBidAsk[1].Size
 
-		if askUpPrice <= maxPriceForMissing(UP, timeLeft, upAvg, downAvg) {
+		if askUpPrice <= maxPriceForMissing(timeLeft, downAvg) {
 			if askUpSize >= neededUpSize {
 				s.placeLimitBuy(marketID, downToken, askUpPrice, neededUpSize)
 			} else {
@@ -302,17 +302,8 @@ func discountTarget(timeLeft int64) int {
 	return DLoss
 }
 
-func maxPriceForMissing(side Side, timeLeft int64, avgUp, avgDown float64) int {
-	limit := MaxPrice - discountTarget(timeLeft)
-
-	switch side {
-	case DOWN:
-		return limit - int(math.Ceil(avgUp))
-	case UP:
-		return limit - int(math.Ceil(avgDown))
-	}
-
-	return 0
+func maxPriceForMissing(timeLeft int64, avg float64) int {
+	return MaxPrice - discountTarget(timeLeft) - int(math.Ceil(avg))
 }
 
 func quoteDepthAllowed(tokenID string, price int, tleft int64) bool {
