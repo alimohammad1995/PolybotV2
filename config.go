@@ -6,8 +6,8 @@ const (
 	DFinal = 0
 	DLoss  = -5
 
-	MaxUnmatched    = 10.0
-	MaxSharePerSize = 40
+	MaxUnmatched           = 10.0
+	MaxHoldingSharePerSize = 50
 
 	MinimumStartWaitingSec = 10
 	MinPrice               = 5

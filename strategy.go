@@ -106,7 +106,6 @@ func (s *Strategy) handle(marketID string) {
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
-	maxQty := math.Max(upQty, downQty)
 
 	pairs := math.Min(upQty, downQty)
 	neededDownSize := upQty - pairs
@@ -136,15 +135,14 @@ func (s *Strategy) handle(marketID string) {
 		}
 	}
 
-	if upQty >= MaxSharePerSize && upQty >= maxQty {
+	upPendingQty := GetPendingOrderSize(upToken)
+	downPendingQty := GetPendingOrderSize(downToken)
+
+	if upQty+upPendingQty > MaxHoldingSharePerSize {
 		allowUp = false
 	}
-	if downQty >= MaxSharePerSize && downQty >= maxQty {
+	if downQty+downPendingQty > MaxHoldingSharePerSize {
 		allowDown = false
-	}
-
-	if !allowUp && !allowDown {
-		return
 	}
 
 	if upBestBidAsk[0].Price >= downBestBidAsk[0].Price {
@@ -281,6 +279,8 @@ var Level2 = []float64{10, 10, 10, 10}
 var Level3 = []float64{20, 20, 20, 20}
 
 func getLevels(price int) []float64 {
+	return Level2
+
 	actualPrice := intAbs(MaxPrice/2 - price)
 
 	switch {

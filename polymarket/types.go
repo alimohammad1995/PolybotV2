@@ -164,6 +164,7 @@ type ActiveOrder struct {
 	Market       string      `json:"market"`
 	AssetID      string      `json:"asset_id"`
 	Price        json.Number `json:"price"`
+	Type         string      `json:"type"`
 	OriginalSize json.Number `json:"original_size"`
 	SizeMatched  json.Number `json:"size_matched"`
 }

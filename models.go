@@ -2,7 +2,6 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"fmt"
 	"sync"
 )
 
@@ -20,7 +19,6 @@ var ActiveMarketIDs = make(map[string]bool)
 var Orders = make(map[string]*Order)
 var MarketToOrderIDs = make(map[string]map[string]bool)
 var AssetToOrderIDs = make(map[string]map[string]bool)
-var AssetPriceToOrderID = make(map[string]string)
 
 var Inventory = make(map[string]*Asset)
 
@@ -68,9 +66,6 @@ func AddOrder(order *Order) {
 		AssetToOrderIDs[order.AssetID] = make(map[string]bool)
 	}
 	AssetToOrderIDs[order.AssetID][order.ID] = true
-
-	assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
-	AssetPriceToOrderID[assetPrice] = order.ID
 }
 
 func DeleteOrder(orderIDs ...string) {
@@ -91,11 +86,6 @@ func DeleteOrder(orderIDs ...string) {
 		}
 		if marketSet, ok := MarketToOrderIDs[order.MarketID]; ok {
 			delete(marketSet, orderID)
-		}
-
-		assetPrice := fmt.Sprintf("%s_%d", order.AssetID, order.Price)
-		if AssetPriceToOrderID[assetPrice] == orderID {
-			delete(AssetPriceToOrderID, assetPrice)
 		}
 
 		delete(Orders, orderID)
@@ -157,14 +147,6 @@ func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
 	return asset.Size, asset.AveragePrice, asset.Size * asset.AveragePrice
 }
 
-func GetOrderAtPrice(assetID string, price int) *Order {
-	assetPrice := fmt.Sprintf("%s_%d", assetID, price)
-	ordersMu.RLock()
-	defer ordersMu.RUnlock()
-	orderID := AssetPriceToOrderID[assetPrice]
-	return Orders[orderID]
-}
-
 func GetOrderIDsByAsset(assetID string) []string {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
@@ -188,12 +170,23 @@ func GetOrdersByAsset(assetID string) map[int]*Order {
 	}
 	out := make(map[int]*Order, len(set))
 	for id := range set {
-		order := Orders[id]
-		if order != nil {
-			out[order.Price] = order
-		}
+		out[Orders[id].Price] = Orders[id]
 	}
 	return out
+}
+
+func GetPendingOrderSize(assetID string) float64 {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+	set := AssetToOrderIDs[assetID]
+	if len(set) == 0 {
+		return 0
+	}
+	size := 0.0
+	for _, order := range Orders {
+		size += order.OriginalSize - order.MatchedSize
+	}
+	return size
 }
 
 func GetMarketIDByToken(tokenID string) (string, bool) {

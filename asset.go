@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-type assetTradeEvent struct {
+type tradeEvent struct {
 	polymarket.Trade
 	EventType string `json:"event_type"`
 }
@@ -39,14 +39,14 @@ func UpdateAsset(msg []byte, funder string) []string {
 	if len(msg) == 0 {
 		return nil
 	}
-	var event assetTradeEvent
+	var event tradeEvent
 	if err := decodeJSON(msg, &event); err != nil {
 		return nil
 	}
 	return applyAssetTradeEvent(event, funder)
 }
 
-func applyAssetTradeEvent(msg assetTradeEvent, funder string) []string {
+func applyAssetTradeEvent(msg tradeEvent, funder string) []string {
 	if msg.EventType != "trade" {
 		return nil
 	}
