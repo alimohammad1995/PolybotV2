@@ -220,30 +220,11 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 }
 
 func (s *Strategy) placeCompletionBuy(marketID, tokenID string, price int, qty float64) string {
-	log.Printf("missing buy place: market=%s token=%s reason=%s price=%d size=%.4f", marketID, tokenID, "full_fill", price, qty)
 	return s.placeLimitBuy(marketID, tokenID, price, qty, OrderTagCompletion)
 }
 
 func (s *Strategy) placeMakerBuy(marketID, tokenID string, price int, qty float64) string {
 	return s.placeLimitBuy(marketID, tokenID, price, qty, OrderTagMaker)
-}
-
-func (s *Strategy) placeMissingBuy(marketID string, tokenID string, neededSize float64, bestAsk *MarketOrder, timeLeft int64, avg float64) string {
-	if bestAsk == nil || neededSize < PolymarketMinimumOrderSize {
-		return ""
-	}
-
-	askPrice, askSize := bestAsk.Price, bestAsk.Size
-	if askPrice > maxPriceForMissing(timeLeft, avg) {
-		return ""
-	}
-
-	if askSize >= neededSize {
-		return s.placeCompletionBuy(marketID, tokenID, askPrice, neededSize)
-	}
-
-	buySize := math.Min(neededSize-PolymarketMinimumOrderSize, askSize)
-	return s.placeCompletionBuy(marketID, tokenID, askPrice, buySize)
 }
 
 func (s *Strategy) cancelSide(tokenID, tag string) error {
@@ -336,6 +317,8 @@ func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired b
 	existing := GetOrdersByAssetAndTag(tokenID, OrderTagCompletion)
 	cancels := make([]string, 0, len(existing))
 	keepOrder := ""
+
+	desiredQty = math.Ceil(desiredQty)
 
 	for _, order := range existing {
 		if !desired || order.Price != desiredPrice || order.OriginalSize != desiredQty {
