@@ -2,7 +2,6 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -107,6 +106,7 @@ func (s *Strategy) handle(marketID string) {
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
+	maxQty := math.Max(upQty, downQty)
 
 	pairs := math.Min(upQty, downQty)
 	neededDownSize := upQty - pairs
@@ -122,8 +122,8 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	allowUp := neededDownSize <= MaxUnmatched && upQty <= MaxSharePerSize
-	allowDown := neededUpSize <= MaxUnmatched && downQty <= MaxSharePerSize
+	allowUp := neededDownSize <= MaxUnmatched
+	allowDown := neededUpSize <= MaxUnmatched
 
 	if timeLeft <= StopNewUnmatchedSec {
 		if neededDownSize > 0 {
@@ -134,6 +134,13 @@ func (s *Strategy) handle(marketID string) {
 			allowUp = false
 			allowDown = false
 		}
+	}
+
+	if upQty >= MaxSharePerSize && upQty >= maxQty {
+		allowUp = false
+	}
+	if downQty >= MaxSharePerSize && downQty >= maxQty {
+		allowDown = false
 	}
 
 	if !allowUp && !allowDown {
@@ -231,7 +238,6 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	}
 
 	levelSize := getLevels(highestBid)
-	fmt.Println(levelSize)
 	desired := make(map[int]float64, len(levelSize))
 	for i, size := range levelSize {
 		price := highestBid - i
@@ -260,8 +266,6 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		}
 		DeleteOrder(cancels...)
 	}
-
-	fmt.Println(desired, existing)
 
 	for price, size := range desired {
 		order := existing[price]

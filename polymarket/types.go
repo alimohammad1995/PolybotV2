@@ -141,6 +141,7 @@ type Trade struct {
 	Side         string       `json:"side"`
 	Price        json.Number  `json:"price"`
 	Size         json.Number  `json:"size"`
+	TraderSide   string       `json:"trader_side"`
 	MakerAddress string       `json:"maker_address"`
 	MakerOrders  []MakerOrder `json:"maker_orders"`
 }

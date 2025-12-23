@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 )
 
@@ -64,4 +65,9 @@ func intAbs(x int) int {
 		return -x
 	}
 	return x
+}
+
+func printJSON(v any) {
+	data, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(data))
 }
