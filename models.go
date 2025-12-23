@@ -189,8 +189,8 @@ func GetPendingOrderSize(assetID string) float64 {
 		return 0
 	}
 	size := 0.0
-	for _, order := range Orders {
-		size += order.OriginalSize - order.MatchedSize
+	for id := range set {
+		size += Orders[id].OriginalSize - Orders[id].MatchedSize
 	}
 	return size
 }
