@@ -2,6 +2,7 @@ package main
 
 import (
 	"Polybot/polymarket"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -171,7 +172,7 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 		return
 	}
 	fPrice := float64(price) / 100.0
-	if fPrice <= PolymarketMinimumOrderValue {
+	if fPrice*qty <= PolymarketMinimumOrderValue {
 		return
 	}
 
@@ -230,6 +231,7 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	}
 
 	levelSize := getLevels(highestBid)
+	fmt.Println(levelSize)
 	desired := make(map[int]float64, len(levelSize))
 	for i, size := range levelSize {
 		price := highestBid - i
@@ -258,6 +260,8 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		}
 		DeleteOrder(cancels...)
 	}
+
+	fmt.Println(desired, existing)
 
 	for price, size := range desired {
 		order := existing[price]
