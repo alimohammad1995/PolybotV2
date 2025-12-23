@@ -140,8 +140,12 @@ func (s *Strategy) handle(marketID string) {
 		}
 	}
 
-	allowUp := neededDownSize <= MaxUnmatched && upQty >= MaxSharePerSize
-	allowDown := neededUpSize <= MaxUnmatched && downQty >= MaxSharePerSize
+	if upBestBidAsk[0] == nil || downBestBidAsk[0] == nil {
+		return
+	}
+
+	allowUp := neededDownSize <= MaxUnmatched && upQty <= MaxSharePerSize
+	allowDown := neededUpSize <= MaxUnmatched && downQty <= MaxSharePerSize
 
 	if timeLeft <= StopNewUnmatchedSec {
 		if neededDownSize > 0 {
@@ -158,16 +162,30 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	if allowUp && upBestBidAsk[0] != nil {
-		s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
-	} else {
-		s.cancelSide(upToken)
-	}
+	if upBestBidAsk[0].Price >= downBestBidAsk[0].Price {
+		if allowUp {
+			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
+		} else {
+			s.cancelSide(upToken)
+		}
 
-	if allowDown && downBestBidAsk[0] != nil {
-		s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
+		if allowDown {
+			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
+		} else {
+			s.cancelSide(downToken)
+		}
 	} else {
-		s.cancelSide(downToken)
+		if allowDown {
+			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
+		} else {
+			s.cancelSide(downToken)
+		}
+
+		if allowUp {
+			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
+		} else {
+			s.cancelSide(upToken)
+		}
 	}
 }
 
@@ -175,7 +193,12 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 	if qty < PolymarketMinimumOrderSize {
 		return
 	}
-	orderID, err := s.executor.BuyLimit(tokenID, float64(price)/100.0, qty, polymarket.OrderTypeGTC)
+	fPrice := float64(price) / 100.0
+	if fPrice <= PolymarketMinimumOrderValue {
+		return
+	}
+
+	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
 	if err != nil {
 		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
 		return

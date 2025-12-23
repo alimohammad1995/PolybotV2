@@ -5,8 +5,8 @@ const (
 	DLate  = 1
 	DFinal = 0
 
-	MaxUnmatched    = 30.0
-	MaxSharePerSize = 100
+	MaxUnmatched    = 10.0
+	MaxSharePerSize = 40
 
 	MinimumStartWaitingSec = 10
 	MinPrice               = 5

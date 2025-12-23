@@ -136,11 +136,21 @@ func (s *stringOrNumber) UnmarshalJSON(data []byte) error {
 }
 
 type Trade struct {
-	AssetID string      `json:"asset_id"`
-	Market  string      `json:"market"`
-	Side    string      `json:"side"`
-	Price   json.Number `json:"price"`
-	Size    json.Number `json:"size"`
+	AssetID      string       `json:"asset_id"`
+	Market       string       `json:"market"`
+	Side         string       `json:"side"`
+	Price        json.Number  `json:"price"`
+	Size         json.Number  `json:"size"`
+	MakerAddress string       `json:"maker_address"`
+	MakerOrders  []MakerOrder `json:"maker_orders"`
+}
+
+type MakerOrder struct {
+	MakerAddress  string      `json:"maker_address"`
+	MatchedAmount json.Number `json:"matched_amount"`
+	Price         json.Number `json:"price"`
+	AssetID       string      `json:"asset_id"`
+	Side          string      `json:"side"`
 }
 
 type TradesResponse struct {

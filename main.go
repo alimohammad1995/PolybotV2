@@ -30,7 +30,7 @@ func run(market string) {
 	userWS := polymarket.NewWebSocketOrderBook(
 		polymarket.UserChannel,
 		func(msg []byte) {
-			assetIds := UpdateAsset(msg)
+			assetIds := UpdateAsset(msg, client.Me())
 			strategy.OnAssetUpdate(assetIds)
 		},
 	)
