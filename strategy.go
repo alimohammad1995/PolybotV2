@@ -114,31 +114,8 @@ func (s *Strategy) handle(marketID string) {
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
 
-	if neededDownSize >= PolymarketMinimumOrderSize && downBestBidAsk[1] != nil {
-		askDownPrice, askDownSize := downBestBidAsk[1].Price, downBestBidAsk[1].Size
-
-		if askDownPrice <= maxPriceForMissing(timeLeft, upAvg) {
-			if askDownSize >= neededDownSize {
-				s.placeLimitBuy(marketID, downToken, askDownPrice, neededDownSize)
-			} else {
-				buySize := math.Min(neededDownSize-PolymarketMinimumOrderSize, askDownSize)
-				s.placeLimitBuy(marketID, downToken, askDownPrice, buySize)
-			}
-		}
-	}
-
-	if neededUpSize > 0 && upBestBidAsk[1] != nil {
-		askUpPrice, askUpSize := upBestBidAsk[1].Price, upBestBidAsk[1].Size
-
-		if askUpPrice <= maxPriceForMissing(timeLeft, downAvg) {
-			if askUpSize >= neededUpSize {
-				s.placeLimitBuy(marketID, downToken, askUpPrice, neededUpSize)
-			} else {
-				buySize := math.Min(neededUpSize-PolymarketMinimumOrderSize, askUpSize)
-				s.placeLimitBuy(marketID, downToken, askUpPrice, buySize)
-			}
-		}
-	}
+	s.placeMissingBuy(marketID, downToken, neededDownSize, downBestBidAsk[1], timeLeft, upAvg)
+	s.placeMissingBuy(marketID, downToken, neededUpSize, upBestBidAsk[1], timeLeft, downAvg)
 
 	if upBestBidAsk[0] == nil || downBestBidAsk[0] == nil {
 		return
@@ -212,6 +189,25 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 		MatchedSize:  0,
 		Price:        price,
 	})
+}
+
+func (s *Strategy) placeMissingBuy(marketID string, tokenID string, neededSize float64, bestAsk *MarketOrder, timeLeft int64, avg float64) {
+	if bestAsk == nil || neededSize < PolymarketMinimumOrderSize {
+		return
+	}
+
+	askPrice, askSize := bestAsk.Price, bestAsk.Size
+	if askPrice > maxPriceForMissing(timeLeft, avg) {
+		return
+	}
+
+	if askSize >= neededSize {
+		s.placeLimitBuy(marketID, tokenID, askPrice, neededSize)
+		return
+	}
+
+	buySize := math.Min(neededSize-PolymarketMinimumOrderSize, askSize)
+	s.placeLimitBuy(marketID, tokenID, askPrice, buySize)
 }
 
 func (s *Strategy) cancelSide(tokenID string) error {
