@@ -4,6 +4,7 @@ const (
 	DBase  = 2
 	DLate  = 1
 	DFinal = 0
+	DLoss  = -5
 
 	MaxUnmatched    = 10.0
 	MaxSharePerSize = 40
@@ -13,8 +14,6 @@ const (
 	MaxPrice               = 100
 	StopNewUnmatchedSec    = 3 * 60
 )
-
-var LevelSize = []float64{5, 5, 5, 5}
 
 type Side string
 

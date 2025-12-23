@@ -58,3 +58,10 @@ func priceIndexFromString(value string) (int, bool) {
 	}
 	return intPart*100 + frac, true
 }
+
+func intAbs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

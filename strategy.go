@@ -233,8 +233,9 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		return
 	}
 
-	desired := make(map[int]float64, len(LevelSize))
-	for i, size := range LevelSize {
+	levelSize := getLevels(highestBid)
+	desired := make(map[int]float64, len(levelSize))
+	for i, size := range levelSize {
 		price := highestBid - i
 		if price >= MinPrice && quoteDepthAllowed(tokenID, price, timeLeft) {
 			desired[price] = size
@@ -271,15 +272,34 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	}
 }
 
-func discountTarget(tleft int64) int {
+var Level1 = []float64{5, 5, 5, 5}
+var Level2 = []float64{10, 10, 10, 10}
+var Level3 = []float64{20, 20, 20, 20}
+
+func getLevels(price int) []float64 {
+	actualPrice := intAbs(MaxPrice/2 - price)
+
 	switch {
-	case tleft > 10*60:
-		return DBase
-	case tleft > 2*60:
-		return DLate
+	case actualPrice <= 10:
+		return Level1
+	case actualPrice <= 30:
+		return Level2
 	default:
+		return Level3
+	}
+}
+
+func discountTarget(timeLeft int64) int {
+	switch {
+	case timeLeft > 10*60:
+		return DBase
+	case timeLeft > 5*60:
+		return DLate
+	case timeLeft > 2*60:
 		return DFinal
 	}
+
+	return DLoss
 }
 
 func maxPriceForMissing(side Side, timeLeft int64, avgUp, avgDown float64) int {
