@@ -35,14 +35,14 @@ func Listener(market string, gamma *polymarket.GammaMarket, marketWS *polymarket
 				AddMarket(marketInfo)
 				SetActiveMarkets(market, gamma)
 
-				tokenYes := marketInfo.ClobTokenIDs[0]
-				tokenNo := marketInfo.ClobTokenIDs[1]
+				tokenUp := marketInfo.ClobTokenIDs[0]
+				tokenDown := marketInfo.ClobTokenIDs[1]
 
-				if !subscribedMap[tokenYes] {
-					newTokenIDs = append(newTokenIDs, tokenYes)
+				if !subscribedMap[tokenUp] {
+					newTokenIDs = append(newTokenIDs, tokenUp)
 				}
-				if !subscribedMap[tokenNo] {
-					newTokenIDs = append(newTokenIDs, tokenNo)
+				if !subscribedMap[tokenDown] {
+					newTokenIDs = append(newTokenIDs, tokenDown)
 				}
 			}
 

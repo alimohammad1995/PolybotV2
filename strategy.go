@@ -304,21 +304,21 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 
 func (s *Strategy) syncCompletionOrders(
 	marketID string,
-	yesToken string,
-	noToken string,
-	unmatchedYes float64,
-	unmatchedNo float64,
+	upToken string,
+	downToken string,
+	unmatchedUp float64,
+	unmatchedDown float64,
 	timeLeft int64,
-	yesAvg float64,
-	noAvg float64,
-	yesBestAsk *MarketOrder,
-	noBestAsk *MarketOrder,
+	upAvg float64,
+	downAvg float64,
+	upBestAsk *MarketOrder,
+	downBestAsk *MarketOrder,
 ) {
-	yesPrice, yesQty, yesDesired := desiredCompletionOrder(unmatchedNo, yesBestAsk, timeLeft, yesAvg)
-	noPrice, noQty, noDesired := desiredCompletionOrder(unmatchedYes, noBestAsk, timeLeft, noAvg)
+	upPrice, upQty, upDesired := desiredCompletionOrder(unmatchedDown, upBestAsk, timeLeft, upAvg)
+	downPrice, downQty, downDesired := desiredCompletionOrder(unmatchedUp, downBestAsk, timeLeft, downAvg)
 
-	s.syncCompletionSide(marketID, yesToken, yesDesired, yesPrice, yesQty)
-	s.syncCompletionSide(marketID, noToken, noDesired, noPrice, noQty)
+	s.syncCompletionSide(marketID, upToken, upDesired, upPrice, upQty)
+	s.syncCompletionSide(marketID, downToken, downDesired, downPrice, downQty)
 }
 
 func desiredCompletionOrder(unmatched float64, bestAsk *MarketOrder, timeLeft int64, avg float64) (int, float64, bool) {

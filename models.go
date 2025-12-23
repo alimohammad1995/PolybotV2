@@ -116,14 +116,14 @@ func AddMarket(marketInfo *polymarket.GammaMarketSummary) {
 	MarketToMarketID[marketInfo.Slug] = marketInfo.MarketID
 	MarketIDToMarketInfo[marketInfo.MarketID] = marketInfo
 
-	tokenYes := marketInfo.ClobTokenIDs[0]
-	tokenNo := marketInfo.ClobTokenIDs[1]
+	tokenUp := marketInfo.ClobTokenIDs[0]
+	tokenDown := marketInfo.ClobTokenIDs[1]
 
-	TokenToMarketID[tokenYes] = marketInfo.MarketID
-	TokenToMarketID[tokenNo] = marketInfo.MarketID
+	TokenToMarketID[tokenUp] = marketInfo.MarketID
+	TokenToMarketID[tokenDown] = marketInfo.MarketID
 
-	TokenToTokenRival[tokenYes] = tokenNo
-	TokenToTokenRival[tokenNo] = tokenYes
+	TokenToTokenRival[tokenUp] = tokenDown
+	TokenToTokenRival[tokenDown] = tokenUp
 }
 
 func IsActiveMarket(marketID string) bool {
