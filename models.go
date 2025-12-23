@@ -34,6 +34,7 @@ type Order struct {
 	OriginalSize float64
 	MatchedSize  float64
 	Price        int
+	Tag          string
 }
 
 type Asset struct {
@@ -147,7 +148,7 @@ func GetAssetPosition(assetID string) (qty, avgPrice, cost float64) {
 	return asset.Size, asset.AveragePrice, asset.Size * asset.AveragePrice
 }
 
-func GetOrderIDsByAsset(assetID string) []string {
+func GetOrderIDsByAssetAndTag(assetID, tag string) []string {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 	set := AssetToOrderIDs[assetID]
@@ -156,12 +157,14 @@ func GetOrderIDsByAsset(assetID string) []string {
 	}
 	ids := make([]string, 0, len(set))
 	for id := range set {
-		ids = append(ids, id)
+		if tag == "" || Orders[id].Tag == tag {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }
 
-func GetOrdersByAsset(assetID string) map[int]*Order {
+func GetOrdersByAssetAndTag(assetID, tag string) map[int]*Order {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 	set := AssetToOrderIDs[assetID]
@@ -170,7 +173,10 @@ func GetOrdersByAsset(assetID string) map[int]*Order {
 	}
 	out := make(map[int]*Order, len(set))
 	for id := range set {
-		out[Orders[id].Price] = Orders[id]
+		order := Orders[id]
+		if tag == "" || order.Tag == tag {
+			out[order.Price] = order
+		}
 	}
 	return out
 }

@@ -7,6 +7,11 @@ const (
 )
 
 const (
+	OrderTagCompletion = "completion"
+	OrderTagMaker      = "maker"
+)
+
+const (
 	EthMarketName = "eth-updown-15m-"
 	BtcMarketName = "btc-updown-15m-"
 	SolMarketName = "sol-updown-15m-"

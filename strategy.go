@@ -114,8 +114,18 @@ func (s *Strategy) handle(marketID string) {
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
 
-	s.placeMissingBuy(marketID, downToken, neededDownSize, downBestBidAsk[1], timeLeft, upAvg)
-	s.placeMissingBuy(marketID, downToken, neededUpSize, upBestBidAsk[1], timeLeft, downAvg)
+	s.syncCompletionOrders(
+		marketID,
+		upToken,
+		downToken,
+		neededDownSize,
+		neededUpSize,
+		timeLeft,
+		upAvg,
+		downAvg,
+		upBestBidAsk[1],
+		downBestBidAsk[1],
+	)
 
 	if upBestBidAsk[0] == nil || downBestBidAsk[0] == nil {
 		return
@@ -149,42 +159,42 @@ func (s *Strategy) handle(marketID string) {
 		if allowUp {
 			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
 		} else {
-			s.cancelSide(upToken)
+			s.cancelSide(upToken, OrderTagMaker)
 		}
 
 		if allowDown {
 			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
 		} else {
-			s.cancelSide(downToken)
+			s.cancelSide(downToken, OrderTagMaker)
 		}
 	} else {
 		if allowDown {
 			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
 		} else {
-			s.cancelSide(downToken)
+			s.cancelSide(downToken, OrderTagMaker)
 		}
 
 		if allowUp {
 			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
 		} else {
-			s.cancelSide(upToken)
+			s.cancelSide(upToken, OrderTagMaker)
 		}
 	}
 }
 
-func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64) {
+func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
 	if qty < PolymarketMinimumOrderSize {
-		return
+		return ""
 	}
 	fPrice := float64(price) / 100.0
 	if fPrice*qty <= PolymarketMinimumOrderValue {
-		return
+		return ""
 	}
 
 	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
 	if err != nil {
 		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
-		return
+		return ""
 	}
 
 	AddOrder(&Order{
@@ -194,30 +204,40 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 		OriginalSize: qty,
 		MatchedSize:  0,
 		Price:        price,
+		Tag:          tag,
 	})
+	return orderID
 }
 
-func (s *Strategy) placeMissingBuy(marketID string, tokenID string, neededSize float64, bestAsk *MarketOrder, timeLeft int64, avg float64) {
+func (s *Strategy) placeCompletionBuy(marketID, tokenID string, price int, qty float64) string {
+	return s.placeLimitBuy(marketID, tokenID, price, qty, OrderTagCompletion)
+}
+
+func (s *Strategy) placeMakerBuy(marketID, tokenID string, price int, qty float64) string {
+	return s.placeLimitBuy(marketID, tokenID, price, qty, OrderTagMaker)
+}
+
+func (s *Strategy) placeMissingBuy(marketID string, tokenID string, neededSize float64, bestAsk *MarketOrder, timeLeft int64, avg float64) string {
 	if bestAsk == nil || neededSize < PolymarketMinimumOrderSize {
-		return
+		return ""
 	}
 
 	askPrice, askSize := bestAsk.Price, bestAsk.Size
 	if askPrice > maxPriceForMissing(timeLeft, avg) {
-		return
+		return ""
 	}
 
 	if askSize >= neededSize {
-		s.placeLimitBuy(marketID, tokenID, askPrice, neededSize)
-		return
+		return s.placeCompletionBuy(marketID, tokenID, askPrice, neededSize)
+
 	}
 
 	buySize := math.Min(neededSize-PolymarketMinimumOrderSize, askSize)
-	s.placeLimitBuy(marketID, tokenID, askPrice, buySize)
+	return s.placeCompletionBuy(marketID, tokenID, askPrice, buySize)
 }
 
-func (s *Strategy) cancelSide(tokenID string) error {
-	orderIds := GetOrderIDsByAsset(tokenID)
+func (s *Strategy) cancelSide(tokenID, tag string) error {
+	orderIds := GetOrderIDsByAssetAndTag(tokenID, tag)
 	if len(orderIds) == 0 {
 		return nil
 	}
@@ -225,13 +245,12 @@ func (s *Strategy) cancelSide(tokenID string) error {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderIds, err)
 		return err
 	}
-	DeleteOrder(orderIds...)
 	return nil
 }
 
 func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft int64) {
 	if highestBid < MinPrice {
-		s.cancelSide(tokenID)
+		s.cancelSide(tokenID, OrderTagMaker)
 		return
 	}
 
@@ -244,11 +263,11 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		}
 	}
 	if len(desired) == 0 {
-		s.cancelSide(tokenID)
+		s.cancelSide(tokenID, OrderTagMaker)
 		return
 	}
 
-	existing := GetOrdersByAsset(tokenID)
+	existing := GetOrdersByAssetAndTag(tokenID, OrderTagMaker)
 	cancels := make([]string, 0, len(existing))
 	for price, order := range existing {
 		desiredSize, ok := desired[price]
@@ -262,7 +281,6 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 			log.Printf("cancel order failed: orderID=%s err=%v", cancels, err)
 			return
 		}
-		DeleteOrder(cancels...)
 	}
 
 	for price, size := range desired {
@@ -270,7 +288,67 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		if order != nil && math.Abs(order.OriginalSize-size) < eps {
 			continue
 		}
-		s.placeLimitBuy(marketID, tokenID, price, size)
+		s.placeMakerBuy(marketID, tokenID, price, size)
+	}
+}
+
+func (s *Strategy) syncCompletionOrders(
+	marketID string,
+	yesToken string,
+	noToken string,
+	unmatchedYes float64,
+	unmatchedNo float64,
+	timeLeft int64,
+	yesAvg float64,
+	noAvg float64,
+	yesBestAsk *MarketOrder,
+	noBestAsk *MarketOrder,
+) {
+	yesPrice, yesQty, yesDesired := desiredCompletionOrder(unmatchedNo, yesBestAsk, timeLeft, yesAvg)
+	noPrice, noQty, noDesired := desiredCompletionOrder(unmatchedYes, noBestAsk, timeLeft, noAvg)
+
+	s.syncCompletionSide(marketID, yesToken, yesDesired, yesPrice, yesQty)
+	s.syncCompletionSide(marketID, noToken, noDesired, noPrice, noQty)
+}
+
+func desiredCompletionOrder(unmatched float64, bestAsk *MarketOrder, timeLeft int64, avg float64) (int, float64, bool) {
+	if unmatched <= 0 || bestAsk == nil {
+		return 0, 0, false
+	}
+	maxPrice := maxPriceForMissing(timeLeft, avg)
+	if bestAsk.Price > maxPrice {
+		return 0, 0, false
+	}
+	return bestAsk.Price, math.Min(unmatched, bestAsk.Size), true
+}
+
+func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired bool, desiredPrice int, desiredQty float64) {
+	existing := GetOrdersByAssetAndTag(tokenID, OrderTagCompletion)
+	cancels := make([]string, 0, len(existing))
+	keepOrder := ""
+
+	for _, order := range existing {
+		if !desired || order.Price != desiredPrice || order.OriginalSize != desiredQty {
+			cancels = append(cancels, order.ID)
+			continue
+		}
+
+		if keepOrder == "" {
+			keepOrder = order.ID
+		} else {
+			cancels = append(cancels, order.ID)
+		}
+	}
+
+	if len(cancels) > 0 {
+		if err := s.executor.CancelOrders(cancels); err != nil {
+			log.Printf("cancel completion order failed: orderID=%s err=%v", cancels, err)
+			return
+		}
+	}
+
+	if keepOrder == "" && desired {
+		s.placeCompletionBuy(marketID, tokenID, desiredPrice, desiredQty)
 	}
 }
 

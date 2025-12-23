@@ -49,6 +49,11 @@ func (e *OrderExecutor) CancelOrders(orderIDs []string) error {
 
 	log.Printf("order cancel: count=%d ids=%v", len(orderIDs), orderIDs)
 	_, err := e.client.client.CancelOrders(orderIDs)
+
+	if err == nil {
+		DeleteOrder(orderIDs...)
+	}
+
 	return err
 }
 
