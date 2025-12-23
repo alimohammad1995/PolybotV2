@@ -181,6 +181,20 @@ func GetOrdersByAssetAndTag(assetID, tag string) map[int]*Order {
 	return out
 }
 
+func GetOrderIDsByMarket(marketID string) []string {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+	set := MarketToOrderIDs[marketID]
+	if len(set) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func GetPendingOrderSize(assetID string) float64 {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()

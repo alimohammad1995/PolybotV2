@@ -104,12 +104,22 @@ func (s *Strategy) handle(marketID string) {
 	upToken := marketInfo.ClobTokenIDs[0]
 	downToken := marketInfo.ClobTokenIDs[1]
 
-	upQty, upAvg, _ := GetAssetPosition(upToken)
-	downQty, downAvg, _ := GetAssetPosition(downToken)
+	upQty, upAvg, upCost := GetAssetPosition(upToken)
+	downQty, downAvg, downCost := GetAssetPosition(downToken)
 
 	pairs := math.Min(upQty, downQty)
 	neededDownSize := upQty - pairs
 	neededUpSize := downQty - pairs
+
+	if upCost+downCost+circuitDelta(timeLeft)*100 <= pairs {
+		orderIDs := GetOrderIDsByMarket(marketID)
+		if len(orderIDs) > 0 {
+			if err := s.executor.CancelOrders(orderIDs); err != nil {
+				log.Printf("circuit break cancel failed: market=%s err=%v", marketID, err)
+			}
+		}
+		return
+	}
 
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
@@ -382,6 +392,17 @@ func discountTarget(timeLeft int64) int {
 	}
 
 	return DLoss
+}
+
+func circuitDelta(timeLeft int64) float64 {
+	switch {
+	case timeLeft > 10*60:
+		return 5
+	case timeLeft > 5*60:
+		return 3
+	}
+
+	return 0
 }
 
 func maxPriceForMissing(timeLeft int64, avg float64) int {
