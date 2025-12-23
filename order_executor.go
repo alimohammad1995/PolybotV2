@@ -22,8 +22,6 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 		Side:    polymarket.SideBuy,
 	}
 
-	log.Printf("order submit: side=buy token=%s price=%.4f size=%.4f type=%s", tokenID, price, size, orderType)
-
 	order, err := e.client.client.CreateOrder(args, nil)
 	if err != nil {
 		return "", err
@@ -39,6 +37,7 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 	if !success {
 		return "", errors.New("order failed")
 	}
+	log.Printf("order submit: side=buy token=%s price=%.4f size=%.4f type=%s", tokenID, price, size, orderType)
 	return orderID, nil
 }
 
@@ -46,9 +45,12 @@ func (e *OrderExecutor) CancelOrders(orderIDs []string) error {
 	if len(orderIDs) == 0 {
 		return nil
 	}
-	log.Printf("order cancel: count=%d ids=%v", len(orderIDs), orderIDs)
-
 	_, err := e.client.client.CancelOrders(orderIDs)
+	if err != nil {
+		log.Printf("cancel order failed: orderID=%s err=%v", orderIDs, err)
+		return err
+	}
+	log.Printf("order cancel: count=%d ids=%v", len(orderIDs), orderIDs)
 	return err
 }
 
