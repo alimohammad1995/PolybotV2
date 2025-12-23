@@ -56,6 +56,12 @@ func AddOrder(order *Order) {
 	ordersMu.Lock()
 	defer ordersMu.Unlock()
 
+	if existingOrder, ok := Orders[order.ID]; ok {
+		if order.Tag == "" {
+			order.Tag = existingOrder.Tag
+		}
+	}
+
 	Orders[order.ID] = order
 
 	if _, ok := MarketToOrderIDs[order.MarketID]; !ok {

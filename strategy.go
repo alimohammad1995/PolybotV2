@@ -220,6 +220,7 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float6
 }
 
 func (s *Strategy) placeCompletionBuy(marketID, tokenID string, price int, qty float64) string {
+	log.Printf("missing buy place: market=%s token=%s reason=%s price=%d size=%.4f", marketID, tokenID, "full_fill", price, qty)
 	return s.placeLimitBuy(marketID, tokenID, price, qty, OrderTagCompletion)
 }
 
@@ -239,7 +240,6 @@ func (s *Strategy) placeMissingBuy(marketID string, tokenID string, neededSize f
 
 	if askSize >= neededSize {
 		return s.placeCompletionBuy(marketID, tokenID, askPrice, neededSize)
-
 	}
 
 	buySize := math.Min(neededSize-PolymarketMinimumOrderSize, askSize)
@@ -267,7 +267,7 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	levelSize := getLevels(highestBid)
 	desired := make(map[int]float64, len(levelSize))
 	for i, size := range levelSize {
-		price := highestBid - i
+		price := getPriceStepMultiplier(highestBid, i, timeLeft)
 		if price >= MinPrice && quoteDepthAllowed(tokenID, price, timeLeft) {
 			desired[price] = size
 		}
@@ -360,6 +360,19 @@ func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired b
 	if keepOrder == "" && desired {
 		s.placeCompletionBuy(marketID, tokenID, desiredPrice, desiredQty)
 	}
+}
+
+func getPriceStepMultiplier(highestBid int, index int, timeLeft int64) int {
+	stepper := 1
+
+	switch {
+	case timeLeft > 10*60:
+		stepper = 3
+	case timeLeft > 5*60:
+		stepper = 2
+	}
+
+	return highestBid - (highestBid % stepper) - index*stepper
 }
 
 var Level1 = []float64{5, 5, 5, 5}
