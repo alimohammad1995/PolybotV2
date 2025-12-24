@@ -187,7 +187,7 @@ func GetOrdersByAssetAndTag(assetID, tag string) map[int]*Order {
 	return out
 }
 
-func GetOrderIDsByMarket(marketID string) []string {
+func GetOrderIDsByMarket(marketID string, tag string) []string {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 	set := MarketToOrderIDs[marketID]
@@ -196,7 +196,10 @@ func GetOrderIDsByMarket(marketID string) []string {
 	}
 	ids := make([]string, 0, len(set))
 	for id := range set {
-		ids = append(ids, id)
+		order := Orders[id]
+		if tag == "" || order.Tag == tag {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }

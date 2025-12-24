@@ -42,12 +42,12 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 	return orderID, nil
 }
 
-func (e *OrderExecutor) CancelOrders(orderIDs []string) error {
+func (e *OrderExecutor) CancelOrders(orderIDs []string, because string) error {
 	if len(orderIDs) == 0 {
 		return nil
 	}
 
-	log.Printf("order cancel: count=%d ids=%v", len(orderIDs), orderIDs)
+	log.Printf("order cancel %s: count=%d ids=%v", because, len(orderIDs), orderIDs)
 	_, err := e.client.client.CancelOrders(orderIDs)
 
 	if err == nil {

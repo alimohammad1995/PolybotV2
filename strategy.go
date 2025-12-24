@@ -93,10 +93,10 @@ func (s *Strategy) handle(marketID string) {
 	now := time.Now().Unix()
 	timeLeft := marketInfo.EndDateTS - now
 	timeStarted := now - marketInfo.StartDateTS
+
 	if timeLeft <= 0 {
 		return
 	}
-
 	if timeStarted >= 0 && timeStarted <= MinimumStartWaitingSec {
 		return
 	}
@@ -110,16 +110,6 @@ func (s *Strategy) handle(marketID string) {
 	pairs := math.Min(upQty, downQty)
 	neededDownSize := upQty - pairs
 	neededUpSize := downQty - pairs
-
-	if upCost+downCost+circuitDelta(timeLeft)*100 <= pairs {
-		orderIDs := GetOrderIDsByMarket(marketID)
-		if len(orderIDs) > 0 {
-			if err := s.executor.CancelOrders(orderIDs); err != nil {
-				log.Printf("circuit break cancel failed: market=%s err=%v", marketID, err)
-			}
-		}
-		return
-	}
 
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
@@ -138,6 +128,13 @@ func (s *Strategy) handle(marketID string) {
 	)
 
 	if upBestBidAsk[0] == nil || downBestBidAsk[0] == nil {
+		return
+	}
+
+	profitCents := pairs*100 - (upCost + downCost)
+	if profitCents >= circuitDelta(timeLeft)*100 {
+		s.cancelSide(upToken, OrderTagMaker)
+		s.cancelSide(downToken, OrderTagMaker)
 		return
 	}
 
@@ -232,7 +229,7 @@ func (s *Strategy) cancelSide(tokenID, tag string) error {
 	if len(orderIds) == 0 {
 		return nil
 	}
-	if err := s.executor.CancelOrders(orderIds); err != nil {
+	if err := s.executor.CancelOrders(orderIds, "side"); err != nil {
 		log.Printf("cancel order failed: orderID=%s err=%v", orderIds, err)
 		return err
 	}
@@ -268,7 +265,7 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	}
 
 	if len(cancels) > 0 {
-		if err := s.executor.CancelOrders(cancels); err != nil {
+		if err := s.executor.CancelOrders(cancels, "sync"); err != nil {
 			log.Printf("cancel order failed: orderID=%s err=%v", cancels, err)
 			return
 		}
@@ -295,8 +292,8 @@ func (s *Strategy) syncCompletionOrders(
 	upBestAsk *MarketOrder,
 	downBestAsk *MarketOrder,
 ) {
-	upPrice, upQty, upDesired := desiredCompletionOrder(unmatchedDown, upBestAsk, timeLeft, upAvg)
-	downPrice, downQty, downDesired := desiredCompletionOrder(unmatchedUp, downBestAsk, timeLeft, downAvg)
+	upPrice, upQty, upDesired := desiredCompletionOrder(unmatchedDown, upBestAsk, timeLeft, downAvg)
+	downPrice, downQty, downDesired := desiredCompletionOrder(unmatchedUp, downBestAsk, timeLeft, upAvg)
 
 	s.syncCompletionSide(marketID, upToken, upDesired, upPrice, upQty)
 	s.syncCompletionSide(marketID, downToken, downDesired, downPrice, downQty)
@@ -334,7 +331,7 @@ func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired b
 	}
 
 	if len(cancels) > 0 {
-		if err := s.executor.CancelOrders(cancels); err != nil {
+		if err := s.executor.CancelOrders(cancels, "completion"); err != nil {
 			log.Printf("cancel completion order failed: orderID=%s err=%v", cancels, err)
 			return
 		}
@@ -393,9 +390,9 @@ func discountTarget(timeLeft int64) int {
 func circuitDelta(timeLeft int64) float64 {
 	switch {
 	case timeLeft > 10*60:
-		return 5
+		return 2
 	case timeLeft > 5*60:
-		return 3
+		return 1
 	}
 
 	return 0
