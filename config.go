@@ -6,7 +6,7 @@ const (
 	DFinal = 0
 	DLoss  = -5
 
-	MaxUnmatched           = 5.0
+	MaxUnmatched           = 1.0
 	MaxHoldingSharePerSize = 50
 
 	MinimumStartWaitingSec = 10

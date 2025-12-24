@@ -107,29 +107,31 @@ func (s *Strategy) handle(marketID string) {
 	neededDownSize := upQty - pairs
 	neededUpSize := downQty - pairs
 
+	if pairs*100 >= (upCost+downCost)+circuitDelta(timeLeft)*100 {
+		s.cancelSide(upToken, OrderTagMaker)
+		s.cancelSide(downToken, OrderTagMaker)
+		return
+	}
+
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
 
 	s.syncCompletionOrders(
 		marketID,
-		upToken,
-		downToken,
-		neededDownSize,
-		neededUpSize,
 		timeLeft,
-		upAvg,
+
+		downToken,
+		downQty,
 		downAvg,
-		upBestBidAsk[1],
 		downBestBidAsk[1],
+
+		upToken,
+		upQty,
+		upAvg,
+		upBestBidAsk[1],
 	)
 
 	if upBestBidAsk[0] == nil || downBestBidAsk[0] == nil {
-		return
-	}
-
-	if pairs*100 >= (upCost+downCost)+circuitDelta(timeLeft)*100 {
-		s.cancelSide(upToken, OrderTagMaker)
-		s.cancelSide(downToken, OrderTagMaker)
 		return
 	}
 
@@ -228,7 +230,7 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 		return
 	}
 
-	levelSize := getLevels(highestBid)
+	levelSize := getLevels()
 	desired := make(map[int]float64, len(levelSize))
 	for i, size := range levelSize {
 		price := getPriceStepMultiplier(highestBid, i, timeLeft)
@@ -268,32 +270,44 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 
 func (s *Strategy) syncCompletionOrders(
 	marketID string,
-	upToken string,
-	downToken string,
-	unmatchedUp float64,
-	unmatchedDown float64,
 	timeLeft int64,
-	upAvg float64,
+
+	downToken string,
+	downQty float64,
 	downAvg float64,
-	upBestAsk *MarketOrder,
 	downBestAsk *MarketOrder,
+
+	upToken string,
+	upQty float64,
+	upAvg float64,
+	upBestAsk *MarketOrder,
 ) {
-	upPrice, upQty, upDesired := desiredCompletionOrder(unmatchedDown, upBestAsk, timeLeft, downAvg)
-	downPrice, downQty, downDesired := desiredCompletionOrder(unmatchedUp, downBestAsk, timeLeft, upAvg)
-
-	s.syncCompletionSide(marketID, upToken, upDesired, upPrice, upQty)
-	s.syncCompletionSide(marketID, downToken, downDesired, downPrice, downQty)
-}
-
-func desiredCompletionOrder(unmatched float64, bestAsk *MarketOrder, timeLeft int64, avg float64) (int, float64, bool) {
-	if unmatched <= 0 || bestAsk == nil {
-		return 0, 0, false
+	if math.Abs(downQty-upQty) < PolymarketMinimumOrderSize {
+		return
 	}
-	maxPrice := maxPriceForMissing(timeLeft, avg)
-	if bestAsk.Price > maxPrice {
-		return 0, 0, false
+
+	totalCost := downQty*downAvg + upQty*upAvg
+
+	if downQty > upQty {
+		neededUpSize := downQty - upQty
+
+		maxNewPriceFloat := (profitDelta(timeLeft)*downQty - totalCost) / neededUpSize
+		maxNewPriceFloat = math.Ceil(maxNewPriceFloat)
+		maxNewPrice := int(maxNewPriceFloat)
+
+		upDesired := upBestAsk != nil && upBestAsk.Price <= maxNewPrice
+
+		s.syncCompletionSide(marketID, upToken, upDesired, maxNewPrice, neededUpSize)
+	} else {
+		neededDownSize := upQty - downQty
+		maxNewPriceFloat := (profitDelta(timeLeft)*upQty - totalCost) / neededDownSize
+		maxNewPriceFloat = math.Ceil(maxNewPriceFloat)
+		maxNewPrice := int(maxNewPriceFloat)
+
+		downDesired := downBestAsk != nil && downBestAsk.Price >= maxNewPrice
+
+		s.syncCompletionSide(marketID, downToken, downDesired, maxNewPrice, neededDownSize)
 	}
-	return bestAsk.Price, math.Min(unmatched, bestAsk.Size), true
 }
 
 func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired bool, desiredPrice int, desiredQty float64) {
@@ -341,36 +355,25 @@ func getPriceStepMultiplier(highestBid int, index int, timeLeft int64) int {
 	return highestBid - (highestBid % stepper) - index*stepper
 }
 
-var Level1 = []float64{5, 5, 5, 5}
 var Level2 = []float64{10, 10, 10, 10}
-var Level3 = []float64{20, 20, 20, 20}
 
-func getLevels(price int) []float64 {
+func getLevels() []float64 {
 	return Level2
-
-	actualPrice := intAbs(MaxPrice/2 - price)
-
-	switch {
-	case actualPrice <= 10:
-		return Level1
-	case actualPrice <= 30:
-		return Level2
-	default:
-		return Level3
-	}
 }
 
-func discountTarget(timeLeft int64) int {
+func profitDelta(timeLeft int64) float64 {
+	delta := DLoss
+
 	switch {
 	case timeLeft > 10*60:
-		return DBase
+		delta = DBase
 	case timeLeft > 5*60:
-		return DLate
+		delta = DLate
 	case timeLeft > 2*60:
-		return DFinal
+		delta = DFinal
 	}
 
-	return DLoss
+	return float64(MaxPrice - delta)
 }
 
 func circuitDelta(timeLeft int64) float64 {
@@ -382,10 +385,6 @@ func circuitDelta(timeLeft int64) float64 {
 	}
 
 	return 0
-}
-
-func maxPriceForMissing(timeLeft int64, avg float64) int {
-	return MaxPrice - discountTarget(timeLeft) - int(math.Ceil(avg))
 }
 
 func quoteDepthAllowed(tokenID string, price int, tleft int64) bool {

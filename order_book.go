@@ -3,6 +3,7 @@ package main
 import (
 	"Polybot/polymarket"
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -61,6 +62,13 @@ func GetBestBidAsk(tokenID string) []*MarketOrder {
 	}
 
 	return res
+}
+
+func PrintBestBidAsk(prefix, tokenID string) {
+	bestBidAsk := GetBestBidAsk(tokenID)
+	if len(bestBidAsk) == 2 {
+		fmt.Printf("%s => Best Bid: (%v, %v), Best Ask: (%v, %v)\n", prefix, bestBidAsk[0].Price, bestBidAsk[0].Size, bestBidAsk[1].Price, bestBidAsk[1].Size)
+	}
 }
 
 /*
