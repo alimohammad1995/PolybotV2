@@ -131,60 +131,50 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	profitCents := pairs*100 - (upCost + downCost)
-	if profitCents >= circuitDelta(timeLeft)*100 {
+	if pairs*100 >= (upCost+downCost)+circuitDelta(timeLeft)*100 {
 		s.cancelSide(upToken, OrderTagMaker)
 		s.cancelSide(downToken, OrderTagMaker)
 		return
 	}
 
-	allowUp := neededDownSize <= MaxUnmatched
-	allowDown := neededUpSize <= MaxUnmatched
-
+	allowUpOrders := neededDownSize < MaxUnmatched
+	allowDownOrders := neededUpSize < MaxUnmatched
 	if timeLeft <= StopNewUnmatchedSec {
-		if neededDownSize > 0 {
-			allowUp = false
-		} else if neededUpSize > 0 {
-			allowDown = false
+		if neededDownSize > eps {
+			allowUpOrders = false
+		} else if neededUpSize > eps {
+			allowDownOrders = false
 		} else {
-			allowUp = false
-			allowDown = false
+			allowUpOrders = false
+			allowDownOrders = false
 		}
 	}
 
-	upPendingQty := GetPendingOrderSize(upToken)
-	downPendingQty := GetPendingOrderSize(downToken)
-
-	if upQty+upPendingQty > MaxHoldingSharePerSize {
-		allowUp = false
+	if !allowDownOrders {
+		s.cancelSide(downToken, OrderTagMaker)
 	}
-	if downQty+downPendingQty > MaxHoldingSharePerSize {
-		allowDown = false
+	if !allowUpOrders {
+		s.cancelSide(upToken, OrderTagMaker)
+	}
+	if !allowUpOrders && !allowDownOrders {
+		return
 	}
 
 	if upBestBidAsk[0].Price >= downBestBidAsk[0].Price {
-		if allowUp {
+		if allowUpOrders {
 			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
-		} else {
-			s.cancelSide(upToken, OrderTagMaker)
 		}
 
-		if allowDown {
+		if allowDownOrders {
 			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
-		} else {
-			s.cancelSide(downToken, OrderTagMaker)
 		}
 	} else {
-		if allowDown {
+		if allowDownOrders {
 			s.syncBids(marketID, downToken, downBestBidAsk[0].Price, timeLeft)
-		} else {
-			s.cancelSide(downToken, OrderTagMaker)
 		}
 
-		if allowUp {
+		if allowUpOrders {
 			s.syncBids(marketID, upToken, upBestBidAsk[0].Price, timeLeft)
-		} else {
-			s.cancelSide(upToken, OrderTagMaker)
 		}
 	}
 }

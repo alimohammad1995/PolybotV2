@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-const eps = 1e-9
+const eps = 0.5
 
 var (
 	ordersMu    = &sync.RWMutex{}
@@ -204,7 +204,7 @@ func GetOrderIDsByMarket(marketID string, tag string) []string {
 	return ids
 }
 
-func GetPendingOrderSize(assetID string) float64 {
+func GetPendingOrderSize(assetID string, tag string) float64 {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 	set := AssetToOrderIDs[assetID]
@@ -213,6 +213,9 @@ func GetPendingOrderSize(assetID string) float64 {
 	}
 	size := 0.0
 	for id := range set {
+		if tag != "" && Orders[id].Tag != tag {
+			continue
+		}
 		size += Orders[id].OriginalSize - Orders[id].MatchedSize
 	}
 	return size
