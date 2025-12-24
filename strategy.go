@@ -137,6 +137,8 @@ func (s *Strategy) handle(marketID string) {
 
 	allowUpOrders := neededDownSize < MaxUnmatched
 	allowDownOrders := neededUpSize < MaxUnmatched
+	allowOrders := allowUpOrders && allowDownOrders
+
 	if timeLeft <= StopNewUnmatchedSec {
 		if neededDownSize > eps {
 			allowUpOrders = false
@@ -146,6 +148,12 @@ func (s *Strategy) handle(marketID string) {
 			allowUpOrders = false
 			allowDownOrders = false
 		}
+	}
+
+	if !allowOrders {
+		s.cancelSide(downToken, OrderTagMaker)
+		s.cancelSide(upToken, OrderTagMaker)
+		return
 	}
 
 	if !allowDownOrders {
@@ -233,7 +241,7 @@ func (s *Strategy) syncBids(marketID, tokenID string, highestBid int, timeLeft i
 	levelSize := getLevels()
 	desired := make(map[int]float64, len(levelSize))
 	for i, size := range levelSize {
-		price := getPriceStepMultiplier(highestBid, i, timeLeft)
+		price := calculatePriceForBidding(highestBid, i, timeLeft)
 		if price >= MinPrice && quoteDepthAllowed(tokenID, price, timeLeft) {
 			desired[price] = size
 		}
@@ -342,7 +350,7 @@ func (s *Strategy) syncCompletionSide(marketID string, tokenID string, desired b
 	}
 }
 
-func getPriceStepMultiplier(highestBid int, index int, timeLeft int64) int {
+func calculatePriceForBidding(highestBid int, index int, timeLeft int64) int {
 	stepper := 1
 
 	switch {
