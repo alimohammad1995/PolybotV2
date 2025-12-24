@@ -41,7 +41,7 @@ func run(market string) {
 				assetIds = append(assetIds, orderAssetIds...)
 			}
 
-			strategy.OnAssetUpdate(assetIds)
+			strategy.OnUpdate(assetIds)
 		},
 	)
 
@@ -49,7 +49,7 @@ func run(market string) {
 		polymarket.MarketChannel,
 		func(msg []byte) {
 			assetIds := UpdateOrderBook(msg)
-			strategy.OnAssetUpdate(assetIds)
+			strategy.OnUpdate(assetIds)
 		},
 	)
 

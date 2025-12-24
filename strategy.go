@@ -28,11 +28,7 @@ func NewStrategy(client *PolymarketClient) *Strategy {
 	return strategy
 }
 
-func (s *Strategy) OnOrderBookUpdate(assetID []string) {
-	s.enqueueMarketsFromAssets(assetID)
-}
-
-func (s *Strategy) OnAssetUpdate(assetID []string) {
+func (s *Strategy) OnUpdate(assetID []string) {
 	s.enqueueMarketsFromAssets(assetID)
 }
 
