@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-const eps = 0.5
+const eps = 1e-9
 
 var (
 	ordersMu    = &sync.RWMutex{}
