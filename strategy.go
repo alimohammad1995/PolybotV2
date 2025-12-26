@@ -2,15 +2,26 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math"
-	"strconv"
 	"sync"
 	"time"
 )
+
+/*
+Assumptions:
+- Your existing codebase provides:
+  - PolymarketClient, OrderExecutor, GetMarketInfo, IsActiveMarket, GetBestBidAsk, GetAssetPosition,
+    GetMarketIDByToken, Snapshot, GetOrderIDsByMarket, AddOrder, Orders map, Orders mutex, MarketToOrderIDs, etc.
+- You receive book updates frequently and fill notifications for your orders.
+
+This file focuses on the full strategy + decision logic and integrates with your existing skeleton.
+*/
+
+// ============================================================================
+// Strategy runner (same structure you already have)
+// ============================================================================
 
 const Workers = 5
 
@@ -22,14 +33,14 @@ type Strategy struct {
 }
 
 func NewStrategy(client *PolymarketClient) *Strategy {
-	strategy := &Strategy{
+	s := &Strategy{
 		executor:  NewOrderExecutor(client),
 		markets:   make(chan string, Workers),
 		pending:   make(map[string]bool),
 		pendingMu: &sync.Mutex{},
 	}
-	strategy.Run()
-	return strategy
+	s.Run()
+	return s
 }
 
 func (s *Strategy) OnUpdate(assetID []string) {
@@ -80,12 +91,6 @@ func (s *Strategy) markDone(marketID string) {
 	delete(s.pending, marketID)
 }
 
-func (s *Strategy) saveSnapshot() {
-
-}
-
-var snapshot = make(map[string]any)
-
 func (s *Strategy) handle(marketID string) {
 	if !IsActiveMarket(marketID) {
 		return
@@ -97,14 +102,9 @@ func (s *Strategy) handle(marketID string) {
 	}
 
 	now := time.Now().Unix()
-	passSeconds := marketInfo.EndDateTS - now
-	elapsedSeconds := now - marketInfo.StartDateTS
-
-	//if passSeconds <= 0 || elapsedSeconds <= MinimumStartWaitingSec {
-	//	return
-	//}
-
-	if passSeconds <= 0 {
+	timeLeftSec := int(marketInfo.EndDateTS - now)
+	elapsedSec := int(now - marketInfo.StartDateTS)
+	if timeLeftSec <= 0 || elapsedSec <= 10 {
 		return
 	}
 
@@ -113,39 +113,11 @@ func (s *Strategy) handle(marketID string) {
 
 	upBestBidAsk := GetBestBidAsk(upToken)
 	downBestBidAsk := GetBestBidAsk(downToken)
-
 	if upBestBidAsk[0] == nil || upBestBidAsk[1] == nil || downBestBidAsk[0] == nil || downBestBidAsk[1] == nil {
 		return
 	}
 
-	if _, ok := snapshot[marketID]; !ok {
-		snapshot[marketID] = make(map[string]any)
-	}
-
-	marketSnapshot, ok := snapshot[marketID].(map[string]any)
-
-	if !ok {
-		marketSnapshot = make(map[string]any)
-		snapshot[marketID] = marketSnapshot
-	}
-
-	marketSnapshot[strconv.FormatInt(now, 10)] = map[string]any{
-		"up":   upBestBidAsk,
-		"down": downBestBidAsk,
-	}
-
-	data, err := json.MarshalIndent(snapshot[marketID], "", "  ")
-	if err != nil {
-		log.Printf("failed to marshal snapshot: %v", err)
-		return
-	}
-
-	filename := fmt.Sprintf("/Users/alimohammad/PycharmProjects/Scripts/data/snapshot_%s.json", marketID)
-	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
-		log.Printf("failed to write snapshot file: %v", err)
-	}
-
-	return
+	Snapshot(marketID, upBestBidAsk, downBestBidAsk)
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
@@ -173,7 +145,8 @@ func (s *Strategy) handle(marketID string) {
 	}
 
 	openOrdersByTag := getOpenOrdersByTag(marketID)
-	plan := TradingDecision(state, book, int(elapsedSeconds), openOrdersByTag)
+	tracker := GetTracker(marketID)
+	plan := TradingDecision(state, book, timeLeftSec, openOrdersByTag, upToken, downToken, tracker)
 	s.executePlan(marketID, upToken, downToken, plan)
 }
 
@@ -215,375 +188,365 @@ type Plan struct {
 	place      []DesiredOrder
 }
 
-type Phase int
+// ============================================================================
+// CONSTANTS (tuned for your observed imbalance range)
+// ============================================================================
 
 const (
-	PhaseEarly Phase = iota
-	PhaseMiddle
-	PhaseLate
+	PayoutCents = 100
+
+	minQty     = 5
+	feesBuffer = 0
+
+	// Profit floors
+	profitFloorNormal = 1
+	profitFloorClose  = 2
+
+	// Inventory thresholds
+	deadband      = 15
+	softImbalance = 40
+	hardImbalance = 80
+	maxImbalance  = 120
+
+	// Close-only very late
+	closeOnlySeconds = 60
+
+	bufferDefault = 2
+	bufferLate    = 1
+
+	pauseAskSumGE = 130
+
+	ladderStep = 1
+
+	requotePriceDelta = 2 // do not churn for 1c moves
 )
 
-type Params struct {
-	phase          Phase
-	edgeTarget     int
-	maxLossPerPair float64
-	imbMax         float64
-	baseSize       float64
-}
+// Equal levels with fixed sizes to avoid create/cancel.
+var ladderSizes = []float64{10, 10, 10, 10}
 
-func GetParams(elapsedSeconds int) Params {
+// Net exposure cap when your bid is expensive (prevents worst-case cliff)
+func maxNetAllowedAtBid(bid int) float64 {
 	switch {
-	case elapsedSeconds < 300:
-		return Params{
-			phase:          PhaseEarly,
-			edgeTarget:     2,
-			maxLossPerPair: 2.0,
-			imbMax:         8,
-			baseSize:       15,
-		}
-	case elapsedSeconds < 600:
-		return Params{
-			phase:          PhaseMiddle,
-			edgeTarget:     1,
-			maxLossPerPair: 3.0,
-			imbMax:         5,
-			baseSize:       10,
-		}
+	case bid >= 97:
+		return 10
+	case bid >= 95:
+		return 20
+	case bid >= 90:
+		return 35
+	case bid >= 85:
+		return 50
 	default:
-		return Params{
-			phase:          PhaseLate,
-			edgeTarget:     0,
-			maxLossPerPair: 5.0,
-			imbMax:         3,
-			baseSize:       5,
-		}
+		return 120
 	}
 }
 
-func Urgency(elapsedSeconds int) float64 {
-	if elapsedSeconds <= 600 {
-		return 0
-	}
-	return clampFloat((float64(elapsedSeconds)-600.0)/300.0, 0, 1)
-}
+// ============================================================================
+// Trading Decision (core)
+// ============================================================================
 
-func ComputePairedBids(book OrderBook, edgeTarget int, imbalance, imbMax float64) (int, int) {
-	maxUp := maxInt(1, book.up.bestAsk-TickCents)
-	maxDown := maxInt(1, book.down.bestAsk-TickCents)
+func TradingDecision(
+	state State,
+	book OrderBook,
+	timeLeft int,
+	openOrdersByTag map[string][]*Order,
+	upToken, downToken string,
+	tracker *MarketTracker,
+) Plan {
+	askUp := book.up.bestAsk
+	askDown := book.down.bestAsk
 
-	bU := minInt(book.up.bestBid+TickCents, maxUp)
-	bD := minInt(book.down.bestBid+TickCents, maxDown)
-
-	skew := imbalance / math.Max(imbMax, 1.0)
-	skew = clampFloat(skew, -1.0, 1.0)
-
-	skewTicks := int(math.Round(3.0 * skew))
-
-	bU -= skewTicks
-	bD += skewTicks
-
-	bU = clampInt(bU, 1, maxUp)
-	bD = clampInt(bD, 1, maxDown)
-
-	sumCap := PayoutCents - edgeTarget
-	sum := bU + bD
-
-	if sum > sumCap {
-		excess := sum - sumCap
-		dropU := (excess + 1) / 2
-		dropD := excess / 2
-
-		bU -= dropU
-		bD -= dropD
+	// Pause if sum of asks is absurd (illiquid / broken)
+	if askUp+askDown >= pauseAskSumGE {
+		return reconcileOrders(nil, openOrdersByTag)
 	}
 
-	bU = clampInt(bU, 1, maxUp)
-	bD = clampInt(bD, 1, maxDown)
-
-	if bU+bD >= PayoutCents {
-		bU = maxInt(1, bU-TickCents)
-		bD = maxInt(1, bD-TickCents)
-	}
-
-	return bU, bD
-}
-
-func MaxHedgePrice(deficitSide OrderSide, book OrderBook, edgeTarget int) int {
-	if deficitSide == SideDown {
-		refUp := minInt(book.up.bestBid+TickCents, maxInt(1, book.up.bestAsk-TickCents))
-		maxP := PayoutCents - edgeTarget - refUp
-		return clampInt(maxP, 1, book.down.bestAsk)
-	}
-	refDown := minInt(book.down.bestBid+TickCents, maxInt(1, book.down.bestAsk-TickCents))
-	maxP := PayoutCents - edgeTarget - refDown
-	return clampInt(maxP, 1, book.up.bestAsk)
-}
-
-func TradingDecision(state State, book OrderBook, elapsedSeconds int, openOrdersByTag map[string][]*Order) Plan {
-	params := GetParams(elapsedSeconds)
-
-	uQ := state.upQty
-	dQ := state.downQty
-	imbalance := uQ - dQ
+	pendingUp := pendingQtyForToken(openOrdersByTag, upToken)
+	pendingDown := pendingQtyForToken(openOrdersByTag, downToken)
+	imbalance := (state.upQty + pendingUp) - (state.downQty + pendingDown)
 	absImb := math.Abs(imbalance)
 
-	totalCost := uQ*state.upAvgCents + dQ*state.downAvgCents
+	// 1) Compute maker targets (complementary)
+	bidUp, bidDown := calculateTargetBids(book, timeLeft, imbalance)
 
-	matchedQty := math.Min(uQ, dQ)
+	// 2) SAFE-ADD caps (CRITICAL FIX)
+	safeUp := safeAddCapUp(askDown)
+	safeDown := safeAddCapDown(askUp)
+	if bidUp > safeUp {
+		bidUp = safeUp
+	}
+	if bidDown > safeDown {
+		bidDown = safeDown
+	}
+	// maker clamp
+	bidUp = clampInt(bidUp, 1, askUp-1)
+	bidDown = clampInt(bidDown, 1, askDown-1)
 
-	currentPnL := matchedQty*float64(PayoutCents) - totalCost
+	disableUp := false
+	disableDown := false
 
-	projectPnL := func(side OrderSide, price int, qty float64) float64 {
-		newUpQty, newDownQty := uQ, dQ
-		newCost := totalCost + float64(price)*qty
+	// 3) Net expensive exposure guard
+	// (If your bid is expensive and you're already net-heavy, stop adding more.)
+	netUp := imbalance
+	netDown := -imbalance
 
-		if side == SideUp {
-			newUpQty += qty
-		} else {
-			newDownQty += qty
-		}
-
-		newMatched := math.Min(newUpQty, newDownQty)
-		return newMatched*float64(PayoutCents) - newCost
+	if float64(bidUp) >= 85 && netUp > maxNetAllowedAtBid(bidUp) {
+		disableUp = true
+		bidUp = 0
+	}
+	if float64(bidDown) >= 85 && netDown > maxNetAllowedAtBid(bidDown) {
+		disableDown = true
+		bidDown = 0
 	}
 
-	hedgeNowPnL := func() float64 {
-		if floatEq(uQ, dQ) {
-			return currentPnL
-		}
-
-		if floatGt(uQ, dQ) {
-			need := uQ - dQ
-			return projectPnL(SideDown, book.down.bestAsk, need)
-		}
-
-		need := dQ - uQ
-		return projectPnL(SideUp, book.up.bestAsk, need)
-	}
-
-	riskBudget := -10.0
-
-	switch params.phase {
-	case PhaseEarly:
-		riskBudget = -20.0
-	case PhaseMiddle:
-		riskBudget = -10.0
-	case PhaseLate:
-		riskBudget = -5.0
-	}
-
-	plan := Plan{cancelTags: []string{}, place: []DesiredOrder{}}
-
-	if params.phase == PhaseLate && currentPnL > 0 {
-		plan.cancelTags = append(plan.cancelTags, TagEdgeUp, TagEdgeDown, TagHedgeUp, TagHedgeDown, TagArbUp, TagArbDown)
-		return ReconcilePlanWithOpenOrders(plan, openOrdersByTag)
-	}
-
-	hedgePnL := hedgeNowPnL()
-	needsEmergencyHedge := false
-
-	if absImb > 20 || (currentPnL < riskBudget && hedgePnL > currentPnL) {
-		needsEmergencyHedge = true
-	}
-
-	if params.phase == PhaseLate && currentPnL < 0 && absImb > 5 {
-		needsEmergencyHedge = true
-	}
-
-	if needsEmergencyHedge {
-		plan.cancelTags = append(plan.cancelTags, TagEdgeUp, TagEdgeDown, TagArbUp, TagArbDown)
-
-		deficitSide := SideDown
-		hedgeTag := TagHedgeDown
-		bestAsk := book.down.bestAsk
-		bestBid := book.down.bestBid
-
-		if floatLt(imbalance, 0) {
-			deficitSide = SideUp
-			hedgeTag = TagHedgeUp
-			bestAsk = book.up.bestAsk
-			bestBid = book.up.bestBid
-		}
-
-		otherSideAvg := state.downAvgCents
-		if deficitSide == SideDown {
-			otherSideAvg = state.upAvgCents
-		}
-
-		maxPrice := float64(PayoutCents) - otherSideAvg
-
-		targetPrice := bestBid + TickCents
-
-		urgency := Urgency(elapsedSeconds)
-		if params.phase == PhaseLate || currentPnL < riskBudget*1.5 {
-			urgency = math.Max(urgency, 0.5)
-		}
-
-		targetPrice = int(math.Round((1.0-urgency)*float64(targetPrice) + urgency*float64(bestAsk)))
-
-		targetPrice = clampInt(targetPrice, bestBid+TickCents, minInt(bestAsk, int(maxPrice)))
-
-		need := absImb
-		maxHedgeSize := 10.0
-		if params.phase == PhaseLate {
-			maxHedgeSize = 15.0
-		}
-
-		size := math.Min(need, maxHedgeSize)
-
-		projectedAfterHedge := projectPnL(deficitSide, targetPrice, size)
-		if projectedAfterHedge > currentPnL || params.phase == PhaseLate {
-			plan.place = append(plan.place, DesiredOrder{
-				side:  deficitSide,
-				price: targetPrice,
-				size:  size,
-				tag:   hedgeTag,
-			})
-		}
-
-		return ReconcilePlanWithOpenOrders(plan, openOrdersByTag)
-	}
-
-	if absImb > 3 && absImb <= params.imbMax {
-		deficitSide := SideDown
-		if floatLt(imbalance, 0) {
-			deficitSide = SideUp
-		}
-
-		bestBid := book.down.bestBid
-		if deficitSide == SideUp {
-			bestBid = book.up.bestBid
-		}
-
-		balancePrice := bestBid + TickCents
-		balanceSize := math.Min(absImb/2, 8.0)
-
-		projectedBalance := projectPnL(deficitSide, balancePrice, balanceSize)
-
-		if projectedBalance >= currentPnL*0.95 {
-			plan.cancelTags = append(plan.cancelTags, TagEdgeUp, TagEdgeDown, TagArbUp, TagArbDown)
-
-			hedgeTag := TagHedgeDown
-			if deficitSide == SideUp {
-				hedgeTag = TagHedgeUp
-			}
-
-			plan.place = append(plan.place, DesiredOrder{
-				side:  deficitSide,
-				price: balancePrice,
-				size:  balanceSize,
-				tag:   hedgeTag,
-			})
-
-			return ReconcilePlanWithOpenOrders(plan, openOrdersByTag)
-		}
-	}
-
-	plan.cancelTags = append(plan.cancelTags, TagHedgeUp, TagHedgeDown, TagArbUp, TagArbDown)
-
-	bU, bD := ComputePairedBids(book, params.edgeTarget, imbalance, params.imbMax)
-
-	sizeU := params.baseSize
-	sizeD := params.baseSize
-
-	if floatGt(imbalance, 0) {
-		sizeD += math.Min(2.0, absImb*0.5)
-		sizeU = math.Max(1.0, sizeU-1.0)
-	} else if floatLt(imbalance, 0) {
-		sizeU += math.Min(2.0, absImb*0.5)
-		sizeD = math.Max(1.0, sizeD-1.0)
-	}
-
-	if params.phase == PhaseLate {
-		sizeU = math.Min(sizeU, 2.0)
-		sizeD = math.Min(sizeD, 2.0)
-
-		if currentPnL > -2.0 {
-			sizeU = 1.0
-			sizeD = 1.0
-		}
-	}
-
-	projectedUp := projectPnL(SideUp, bU, sizeU)
-	projectedDown := projectPnL(SideDown, bD, sizeD)
-
-	if absImb > 2 {
-		if floatGt(imbalance, 0) {
-			plan.cancelTags = append(plan.cancelTags, TagEdgeUp)
-			if projectedDown >= currentPnL*0.98 || params.phase == PhaseEarly {
-				plan.place = append(plan.place, DesiredOrder{
-					side:  SideDown,
-					price: bD,
-					size:  sizeD,
-					tag:   TagEdgeDown,
-				})
+	// 4) Inventory control: at HARD start active closing on the other side
+	if absImb >= hardImbalance {
+		if imbalance > 0 {
+			// UP-heavy: stop UP adds, close with DOWN using close-cap (can go near ask)
+			disableUp = true
+			bidUp = 0
+			closeCap := maxPayToCloseDown(state, tracker)
+			// If crossing locks profit, allow cross to askDown
+			if closeCap >= askDown {
+				bidDown = askDown
+			} else {
+				bidDown = minInt(askDown-1, closeCap)
 			}
 		} else {
-			plan.cancelTags = append(plan.cancelTags, TagEdgeDown)
-			if projectedUp >= currentPnL*0.98 || params.phase == PhaseEarly {
-				plan.place = append(plan.place, DesiredOrder{
-					side:  SideUp,
-					price: bU,
-					size:  sizeU,
-					tag:   TagEdgeUp,
-				})
+			// DOWN-heavy
+			disableDown = true
+			bidDown = 0
+			closeCap := maxPayToCloseUp(state, tracker)
+			if closeCap >= askUp {
+				bidUp = askUp
+			} else {
+				bidUp = minInt(askUp-1, maxInt(bidUp, closeCap))
 			}
 		}
-		return ReconcilePlanWithOpenOrders(plan, openOrdersByTag)
 	}
 
-	if projectedUp >= currentPnL*0.98 || params.phase == PhaseEarly {
-		plan.place = append(plan.place, DesiredOrder{
-			side:  SideUp,
-			price: bU,
-			size:  sizeU,
-			tag:   TagEdgeUp,
-		})
+	// 5) MAX imbalance => close-only, no new exposure at all
+	if absImb >= maxImbalance {
+		if imbalance > 0 {
+			disableUp = true
+			bidUp = 0
+		} else {
+			disableDown = true
+			bidDown = 0
+		}
 	}
 
-	if projectedDown >= currentPnL*0.98 || params.phase == PhaseEarly {
-		plan.place = append(plan.place, DesiredOrder{
-			side:  SideDown,
-			price: bD,
-			size:  sizeD,
-			tag:   TagEdgeDown,
-		})
+	// 6) Close-only very late
+	if timeLeft <= closeOnlySeconds {
+		if imbalance > deadband {
+			disableUp = true
+			bidUp = 0
+		} else if imbalance < -deadband {
+			disableDown = true
+			bidDown = 0
+		}
 	}
 
-	return ReconcilePlanWithOpenOrders(plan, openOrdersByTag)
+	desired := make([]DesiredOrder, 0, len(ladderSizes)*2)
+
+	if !disableUp && bidUp > 0 {
+		desired = append(desired, buildLadder(SideUp, bidUp)...)
+	}
+	if !disableDown && bidDown > 0 {
+		desired = append(desired, buildLadder(SideDown, bidDown)...)
+	}
+
+	return reconcileOrders(desired, openOrdersByTag)
 }
 
-func ReconcilePlanWithOpenOrders(plan Plan, openOrdersByTag map[string][]*Order) Plan {
+// ============================================================================
+// Pending qty: uses Original - Matched (handles partial fills)
+// ============================================================================
+
+func pendingQtyForToken(openOrdersByTag map[string][]*Order, tokenID string) float64 {
+	total := 0.0
+	for _, orders := range openOrdersByTag {
+		for _, order := range orders {
+			if order == nil || order.AssetID != tokenID {
+				continue
+			}
+			remaining := order.OriginalSize - order.MatchedSize
+			if remaining > 0 {
+				total += remaining
+			}
+		}
+	}
+	return total
+}
+
+// ============================================================================
+// Pricing: complementary maker + tight buffer
+// ============================================================================
+
+func calculateTargetBids(book OrderBook, timeLeft int, imbalance float64) (int, int) {
+	askUp := book.up.bestAsk
+	askDown := book.down.bestAsk
+	if askUp <= 0 || askDown <= 0 {
+		return 0, 0
+	}
+
+	bufferUp, bufferDown := calculateBuffers(timeLeft, imbalance)
+	targetUp := PayoutCents - askDown - bufferUp
+	targetDown := PayoutCents - askUp - bufferDown
+
+	// maker clamp
+	targetUp = clampInt(targetUp, 1, askUp-1)
+	targetDown = clampInt(targetDown, 1, askDown-1)
+
+	return targetUp, targetDown
+}
+
+func calculateBuffers(timeLeft int, imbalance float64) (int, int) {
+	base := bufferDefault
+	if timeLeft <= 120 {
+		base = bufferLate
+	}
+
+	absImb := math.Abs(imbalance)
+	if absImb <= deadband {
+		return base, base
+	}
+
+	// Very gentle skew: widen heavy side by 1
+	skew := 0
+	if absImb > softImbalance {
+		skew = 1
+	}
+
+	if imbalance > 0 {
+		// UP-heavy => UP wider, DOWN tighter
+		return minInt(3, base+skew), maxInt(0, base-skew)
+	}
+	return maxInt(0, base-skew), minInt(3, base+skew)
+}
+
+// Safe-add caps (the main “don’t go negative” guard)
+func safeAddCapUp(askDown int) int {
+	return clampInt(PayoutCents-askDown-feesBuffer-profitFloorNormal, 1, 99)
+}
+func safeAddCapDown(askUp int) int {
+	return clampInt(PayoutCents-askUp-feesBuffer-profitFloorNormal, 1, 99)
+}
+
+// Close-cap using tracker heaps if available; otherwise fallback to avg
+func maxPayToCloseUp(state State, tracker *MarketTracker) int {
+	// closing UP means you already have unpaired DOWN; buy UP to pair it
+	if p, ok := tracker.CheapestUnpairedDownPrice(); ok {
+		return clampInt(PayoutCents-p-feesBuffer-profitFloorClose, 1, 99)
+	}
+	if state.downQty <= 0 {
+		return 0
+	}
+	avgDown := int(math.Round(state.downAvgCents))
+	return clampInt(PayoutCents-avgDown-feesBuffer-profitFloorClose, 1, 99)
+}
+
+func maxPayToCloseDown(state State, tracker *MarketTracker) int {
+	if p, ok := tracker.CheapestUnpairedUpPrice(); ok {
+		return clampInt(PayoutCents-p-feesBuffer-profitFloorClose, 1, 99)
+	}
+	if state.upQty <= 0 {
+		return 0
+	}
+	avgUp := int(math.Round(state.upAvgCents))
+	return clampInt(PayoutCents-avgUp-feesBuffer-profitFloorClose, 1, 99)
+}
+
+// ============================================================================
+// Ladder: equal steps + fixed sizes (no churn)
+// ============================================================================
+
+func buildLadder(side OrderSide, topBid int) []DesiredOrder {
+	if topBid <= 0 {
+		return nil
+	}
+	orders := make([]DesiredOrder, 0, len(ladderSizes))
+	sideTag := "DOWN"
+	if side == SideUp {
+		sideTag = "UP"
+	}
+	for level := 0; level < len(ladderSizes); level++ {
+		price := topBid - (level * ladderStep)
+		if price < 1 {
+			continue
+		}
+		orders = append(orders, DesiredOrder{
+			side:  side,
+			price: price,
+			size:  ladderSizes[level],
+			tag:   fmt.Sprintf("%s_L%d", sideTag, level),
+		})
+	}
+	return orders
+}
+
+// ============================================================================
+// Reconcile: low churn BUT force-cancel unsafe orders
+// - ignore size diffs
+// - cancel if price diff >= requotePriceDelta
+// - ALSO cancel if existing is unsafe: crosses ask or above safe cap
+// ============================================================================
+
+func reconcileOrders(
+	desired []DesiredOrder,
+	openOrdersByTag map[string][]*Order,
+) Plan { // REMOVED: safeCapUp, safeCapDown parameters
+	desiredByTag := make(map[string]DesiredOrder, len(desired))
+	for _, d := range desired {
+		desiredByTag[d.tag] = d
+	}
+
 	cancelSet := make(map[string]bool)
-	for _, tag := range plan.cancelTags {
-		if len(openOrdersByTag[tag]) > 0 {
+
+	for tag, orders := range openOrdersByTag {
+		want, ok := desiredByTag[tag]
+		if !ok {
+			// Tag no longer desired - cancel
+			cancelSet[tag] = true
+			continue
+		}
+		if len(orders) != 1 || orders[0] == nil {
+			// Multiple orders or nil - cancel
+			cancelSet[tag] = true
+			continue
+		}
+		cur := orders[0]
+
+		// REMOVED: The aggressive safeCapUp/safeCapDown check
+		// The bidding logic already ensures safe prices
+
+		// Only cancel if price changed significantly
+		if intAbs(cur.Price-want.price) >= requotePriceDelta {
 			cancelSet[tag] = true
 		}
 	}
 
-	finalPlaces := make([]DesiredOrder, 0, len(plan.place))
-	for _, desired := range plan.place {
-		existing := openOrdersByTag[desired.tag]
-		if len(existing) == 0 {
-			finalPlaces = append(finalPlaces, desired)
+	places := make([]DesiredOrder, 0, len(desired))
+	for _, d := range desired {
+		if d.price <= 0 || d.size < minQty {
 			continue
 		}
-
-		if len(existing) == 1 && isOrderClose(existing[0], desired) {
-			continue
+		existing := openOrdersByTag[d.tag]
+		if len(existing) == 1 && !cancelSet[d.tag] {
+			continue // Order exists and is close enough - keep it
 		}
-
-		cancelSet[desired.tag] = true
-		finalPlaces = append(finalPlaces, desired)
+		places = append(places, d)
 	}
 
 	cancelTags := make([]string, 0, len(cancelSet))
 	for tag := range cancelSet {
 		cancelTags = append(cancelTags, tag)
 	}
-
-	return Plan{cancelTags: cancelTags, place: finalPlaces}
+	return Plan{cancelTags: cancelTags, place: places}
 }
+
+// ============================================================================
+// Execute plan (same as yours, with dedupe)
+// ============================================================================
 
 func (s *Strategy) executePlan(marketID, upToken, downToken string, plan Plan) {
 	cancelTags := dedupeStrings(plan.cancelTags)
@@ -608,13 +571,39 @@ func (s *Strategy) executePlan(marketID, upToken, downToken string, plan Plan) {
 		}
 
 		size := normalizeOrderSize(order.size)
-		if size <= 0 {
+		if size < PolymarketMinimumOrderSize {
 			continue
 		}
 
 		s.placeLimitBuy(marketID, tokenID, order.price, size, order.tag)
 	}
 }
+
+func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
+	if qty < PolymarketMinimumOrderSize {
+		return ""
+	}
+	fPrice := float64(price) / 100.0
+	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
+	if err != nil {
+		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
+		return ""
+	}
+	AddOrder(&Order{
+		ID:           orderID,
+		MarketID:     marketID,
+		AssetID:      tokenID,
+		OriginalSize: qty,
+		MatchedSize:  0,
+		Price:        price,
+		Tag:          tag,
+	})
+	return orderID
+}
+
+// ============================================================================
+// Open orders by tag (same idea as your version)
+// ============================================================================
 
 func getOpenOrdersByTag(marketID string) map[string][]*Order {
 	ordersMu.RLock()
@@ -635,43 +624,13 @@ func getOpenOrdersByTag(marketID string) map[string][]*Order {
 	return out
 }
 
+// ============================================================================
+// Utils
+// ============================================================================
+
 func normalizeOrderSize(size float64) float64 {
 	if size <= 0 {
 		return 0
 	}
 	return math.Max(size, PolymarketMinimumOrderSize)
-}
-
-func isOrderClose(order *Order, desired DesiredOrder) bool {
-	if order == nil {
-		return false
-	}
-	if intAbs(order.Price-desired.price) >= TickCents {
-		return false
-	}
-	return math.Abs(order.OriginalSize-desired.size) < 0.5
-}
-
-func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
-	if qty < PolymarketMinimumOrderSize {
-		return ""
-	}
-	fPrice := float64(price) / 100.0
-
-	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
-	if err != nil {
-		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
-		return ""
-	}
-
-	AddOrder(&Order{
-		ID:           orderID,
-		MarketID:     marketID,
-		AssetID:      tokenID,
-		OriginalSize: qty,
-		MatchedSize:  0,
-		Price:        price,
-		Tag:          tag,
-	})
-	return orderID
 }
