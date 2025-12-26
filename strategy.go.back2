@@ -2,12 +2,8 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
 	"log"
 	"math"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -80,12 +76,6 @@ func (s *Strategy) markDone(marketID string) {
 	delete(s.pending, marketID)
 }
 
-func (s *Strategy) saveSnapshot() {
-
-}
-
-var snapshot = make(map[string]any)
-
 func (s *Strategy) handle(marketID string) {
 	if !IsActiveMarket(marketID) {
 		return
@@ -100,11 +90,7 @@ func (s *Strategy) handle(marketID string) {
 	passSeconds := marketInfo.EndDateTS - now
 	elapsedSeconds := now - marketInfo.StartDateTS
 
-	//if passSeconds <= 0 || elapsedSeconds <= MinimumStartWaitingSec {
-	//	return
-	//}
-
-	if passSeconds <= 0 {
+	if passSeconds <= 0 || elapsedSeconds <= MinimumStartWaitingSec {
 		return
 	}
 
@@ -117,35 +103,6 @@ func (s *Strategy) handle(marketID string) {
 	if upBestBidAsk[0] == nil || upBestBidAsk[1] == nil || downBestBidAsk[0] == nil || downBestBidAsk[1] == nil {
 		return
 	}
-
-	if _, ok := snapshot[marketID]; !ok {
-		snapshot[marketID] = make(map[string]any)
-	}
-
-	marketSnapshot, ok := snapshot[marketID].(map[string]any)
-
-	if !ok {
-		marketSnapshot = make(map[string]any)
-		snapshot[marketID] = marketSnapshot
-	}
-
-	marketSnapshot[strconv.FormatInt(now, 10)] = map[string]any{
-		"up":   upBestBidAsk,
-		"down": downBestBidAsk,
-	}
-
-	data, err := json.MarshalIndent(snapshot[marketID], "", "  ")
-	if err != nil {
-		log.Printf("failed to marshal snapshot: %v", err)
-		return
-	}
-
-	filename := fmt.Sprintf("/Users/alimohammad/PycharmProjects/Scripts/data/snapshot_%s.json", marketID)
-	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
-		log.Printf("failed to write snapshot file: %v", err)
-	}
-
-	return
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
