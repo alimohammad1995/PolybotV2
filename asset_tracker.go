@@ -70,7 +70,7 @@ func (t *MarketTracker) pairLots() {
 			return
 		}
 		// profit per paired share = 100 - (u+d) - FEES
-		profit := float64(PayoutCents-(uPrice+dPrice)-feesBuffer) * q2
+		profit := float64(PayoutCents-(uPrice+dPrice)) * q2
 		t.pairedQty += q2
 		t.pairedProfitCents += profit
 	}
@@ -94,6 +94,71 @@ func (t *MarketTracker) CheapestUnpairedUpPrice() (int, bool) {
 		return 0, false
 	}
 	return lot.price, true
+}
+
+type UnpairedStats struct {
+	Qty       float64
+	CostCents float64 // sum(price*qty)
+	MinPrice  int
+	MaxPrice  int
+}
+
+func (t *MarketTracker) UnpairedUpStats() (UnpairedStats, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.upLots.items) == 0 {
+		return UnpairedStats{}, false
+	}
+	st := UnpairedStats{MinPrice: int(^uint(0) >> 1), MaxPrice: 0}
+	for _, it := range t.upLots.items {
+		if it.qty <= 1e-12 {
+			continue
+		}
+		st.Qty += it.qty
+		st.CostCents += float64(it.price) * it.qty
+		if it.price < st.MinPrice {
+			st.MinPrice = it.price
+		}
+		if it.price > st.MaxPrice {
+			st.MaxPrice = it.price
+		}
+	}
+	if st.Qty <= 1e-12 {
+		return UnpairedStats{}, false
+	}
+	if st.MinPrice == int(^uint(0)>>1) {
+		st.MinPrice = st.MaxPrice
+	}
+	return st, true
+}
+
+func (t *MarketTracker) UnpairedDownStats() (UnpairedStats, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.downLots.items) == 0 {
+		return UnpairedStats{}, false
+	}
+	st := UnpairedStats{MinPrice: int(^uint(0) >> 1), MaxPrice: 0}
+	for _, it := range t.downLots.items {
+		if it.qty <= 1e-12 {
+			continue
+		}
+		st.Qty += it.qty
+		st.CostCents += float64(it.price) * it.qty
+		if it.price < st.MinPrice {
+			st.MinPrice = it.price
+		}
+		if it.price > st.MaxPrice {
+			st.MaxPrice = it.price
+		}
+	}
+	if st.Qty <= 1e-12 {
+		return UnpairedStats{}, false
+	}
+	if st.MinPrice == int(^uint(0)>>1) {
+		st.MinPrice = st.MaxPrice
+	}
+	return st, true
 }
 
 // ============================================================================
