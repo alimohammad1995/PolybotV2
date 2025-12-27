@@ -110,7 +110,7 @@ func AddAsset(assetID, marketID string, size float64, price float64) {
 	}
 
 	asset.Update(PriceToInt(price), size)
-	UpdateAssetTracker(assetID, marketID, size, PriceToInt(price))
+	//UpdateAssetTracker(assetID, marketID, size, PriceToInt(price))
 }
 
 func UpdateAssetTracker(assetID, marketID string, size float64, price int) {

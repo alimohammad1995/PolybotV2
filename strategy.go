@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +17,7 @@ const (
 )
 
 // ============================================================================
-// Strategy runner (unchanged behavior, but rate-limited per market)
+// Strategy runner
 // ============================================================================
 
 type Strategy struct {
@@ -149,6 +148,10 @@ func (s *Strategy) handle(marketID string) {
 	s.executePlan(marketID, upToken, downToken, plan)
 }
 
+// ============================================================================
+// Types
+// ============================================================================
+
 type State struct {
 	upQty        float64
 	downQty      float64
@@ -187,29 +190,44 @@ type Plan struct {
 	cancelByTag map[string][]string
 }
 
+// ============================================================================
+// Strategy knobs (simple + effective)
+// ============================================================================
+
 const (
 	minQty = 5
 
-	bufferCents      = 1
-	profitFloorCents = 1
+	// Require maker quotes to allow pair profit:
+	// sum of the two maker bids must be <= 99 (profitFloor=1)
+	profitFloorCents = 5
+	pairSumLimit     = PayoutCents - profitFloorCents // 99
 
-	hardImbalance = 80
+	// inventory control
+	softImbalance = 20 // start leaning
+	hardImbalance = 80 // consider closing at ask
+
+	// cancel/replace only if price moved enough (avoid churn)
+	requoteDelta = 1
 
 	ladderStep = 1
+
+	// closing behavior
+	closeMaxQty       = 50
+	closeNearEndSec   = 5 * 60
+	closeForceMaxCost = 99 // keep within [1..99] anyway
 )
 
-var ladderSizes = []float64{10, 10, 10, 10}
+var ladderSizesBalanced = []float64{8, 8, 8, 8}
+var ladderSizesPassive = []float64{5, 5}
 
-const (
-	requoteDeltaL0       = 2
-	safeCapCancelSlack   = 2
-	pendingCountMaxLevel = 1
-)
+// ============================================================================
+// Core PnL math
+// ============================================================================
 
 func minPnLCents(st State) float64 {
-	minQty := math.Min(st.upQty, st.downQty)
+	pairs := math.Min(st.upQty, st.downQty)
 	totalCost := st.upQty*st.upAvgCents + st.downQty*st.downAvgCents
-	return minQty*PayoutCents - totalCost
+	return pairs*PayoutCents - totalCost
 }
 
 func simulateMinPnLCents(st State, side OrderSide, price int, qty float64) float64 {
@@ -234,28 +252,32 @@ func simulateMinPnLCents(st State, side OrderSide, price int, qty float64) float
 	return minPnLCents(st)
 }
 
-func fairCapFromOppAsk(oppAsk int) int {
-	return clampInt(PayoutCents-oppAsk-bufferCents-profitFloorCents, 1, 99)
+// ============================================================================
+// Pricing: join bid + enforce pair-edge + inventory skew
+// ============================================================================
+
+func joinBid(bestBid, bestAsk int) int {
+	// maker must be < ask
+	if bestAsk <= 1 {
+		return 1
+	}
+	if bestBid >= bestAsk {
+		return bestAsk - 1
+	}
+	if bestBid <= 0 {
+		return 1
+	}
+	return bestBid
 }
 
-func calculateMakerBids(book OrderBook, net float64) (bidUp int, bidDown int, capUp int, capDown int) {
-	askUp := book.up.bestAsk
-	askDown := book.down.bestAsk
+func calculateMakerBidsV2(book OrderBook, net float64) (bidUp, bidDown int) {
+	bidUp = joinBid(book.up.bestBid, book.up.bestAsk)
+	bidDown = joinBid(book.down.bestBid, book.down.bestAsk)
 
-	capUp = fairCapFromOppAsk(askDown)
-	capDown = fairCapFromOppAsk(askUp)
-
-	bidUp = minInt(book.up.bestBid+1, askUp-1)
-	bidDown = minInt(book.down.bestBid+1, askDown-1)
-
-	bidUp = minInt(bidUp, capUp)
-	bidDown = minInt(bidDown, capDown)
-
-	bidUp = clampInt(bidUp, 1, askUp-1)
-	bidDown = clampInt(bidDown, 1, askDown-1)
-
-	skew := clampInt(int(math.Floor(math.Abs(net)/5.0)), 0, 4)
+	// Inventory skew: push quotes towards the side we need (short side)
+	skew := clampInt(int(math.Abs(net)*2/softImbalance), 0, 4)
 	if net > 0 {
+		// long UP -> less aggressive UP, more aggressive DOWN
 		bidUp -= skew
 		bidDown += skew
 	} else if net < 0 {
@@ -263,28 +285,33 @@ func calculateMakerBids(book OrderBook, net float64) (bidUp int, bidDown int, ca
 		bidDown -= skew
 	}
 
-	bidUp = clampInt(bidUp, 1, askUp-1)
-	bidDown = clampInt(bidDown, 1, askDown-1)
+	// Clamp valid maker ranges
+	bidUp = clampInt(bidUp, 1, maxInt(1, book.up.bestAsk-1))
+	bidDown = clampInt(bidDown, 1, maxInt(1, book.down.bestAsk-1))
 
-	limit := PayoutCents - profitFloorCents
+	// Profitability rule: don't quote both sides so high that pair becomes breakeven
 	sum := bidUp + bidDown
-	if sum > limit {
-		over := sum - limit
+	if sum > pairSumLimit {
+		over := sum - pairSumLimit
 		if net > 0 {
 			bidUp = maxInt(1, bidUp-over)
 		} else if net < 0 {
 			bidDown = maxInt(1, bidDown-over)
 		} else {
-			sh := (over + 1) / 2
-			bidUp = maxInt(1, bidUp-sh)
-			bidDown = maxInt(1, bidDown-(over-sh))
+			half := (over + 1) / 2
+			bidUp = maxInt(1, bidUp-half)
+			bidDown = maxInt(1, bidDown-(over-half))
 		}
 	}
 
-	bidUp = clampInt(bidUp, 1, askUp-1)
-	bidDown = clampInt(bidDown, 1, askDown-1)
+	bidUp = clampInt(bidUp, 1, maxInt(1, book.up.bestAsk-1))
+	bidDown = clampInt(bidDown, 1, maxInt(1, book.down.bestAsk-1))
 	return
 }
+
+// ============================================================================
+// Decision + reconciliation
+// ============================================================================
 
 func TradingDecision(
 	state State,
@@ -292,33 +319,38 @@ func TradingDecision(
 	timeLeft int,
 	openOrdersByTag map[string][]*Order,
 	upToken, downToken string,
-	_ *MarketTracker, // unused in simplified logic
+	_ *MarketTracker,
 ) Plan {
-	askUp := book.up.bestAsk
-	askDown := book.down.bestAsk
-	if askUp <= 0 || askDown <= 0 {
-		return Plan{cancelByTag: map[string][]string{}, place: nil}
+	if book.up.bestAsk <= 0 || book.down.bestAsk <= 0 {
+		return Plan{cancelByTag: map[string][]string{}}
 	}
 
-	pendingUp := pendingQtyForTokenUpToLevel(openOrdersByTag, upToken, pendingCountMaxLevel)
-	pendingDown := pendingQtyForTokenUpToLevel(openOrdersByTag, downToken, pendingCountMaxLevel)
+	// Use ALL pending (not only L0), otherwise you oscillate & churn
+	pendingUp := pendingQtyForToken(openOrdersByTag, upToken)
+	pendingDown := pendingQtyForToken(openOrdersByTag, downToken)
 
 	net := (state.upQty + pendingUp) - (state.downQty + pendingDown)
 	absNet := math.Abs(net)
 
-	bidUp, bidDown, capUp, capDown := calculateMakerBids(book, net)
+	bidUp, bidDown := calculateMakerBidsV2(book, net)
 
 	desired := make([]DesiredOrder, 0, 16)
 
-	if absNet >= hardImbalance {
+	// ---- CLOSE LOGIC (your snippet) ----
+	// Use ask to rebalance only if it IMPROVES minPnL.
+	// Trigger: hard imbalance OR near end (optional but helps stop tail losses).
+	if absNet >= hardImbalance || timeLeft <= closeNearEndSec {
 		needSide := SideUp
-		ask := askUp
+		ask := book.up.bestAsk
 		if net > 0 {
 			needSide = SideDown
-			ask = askDown
+			ask = book.down.bestAsk
 		}
-		size := math.Min(absNet, 50)
-		if size >= minQty {
+
+		ask = clampInt(ask, 1, closeForceMaxCost)
+		size := math.Min(absNet, closeMaxQty)
+
+		if size >= minQty && ask > 0 {
 			before := minPnLCents(state)
 			after := simulateMinPnLCents(state, needSide, ask, size)
 
@@ -337,22 +369,56 @@ func TradingDecision(
 		}
 	}
 
-	if bidUp > 0 {
-		desired = append(desired, buildLadder(SideUp, bidUp)...)
-	}
-	if bidDown > 0 {
-		desired = append(desired, buildLadder(SideDown, bidDown)...)
+	// ---- MAKER QUOTES ----
+	// Balanced: quote both with full ladder.
+	// Imbalanced: quote mainly the short side; keep long side passive (smaller + further back).
+	if absNet <= softImbalance {
+		desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced, 0)...)
+		desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced, 0)...)
+	} else {
+		if net > 0 {
+			// long UP -> focus on DOWN
+			desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced, 0)...)
+			desired = append(desired, buildLadderWithSizes(SideUp, bidUp-2, ladderSizesPassive, 2)...)
+		} else {
+			// long DOWN -> focus on UP
+			desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced, 0)...)
+			desired = append(desired, buildLadderWithSizes(SideDown, bidDown-2, ladderSizesPassive, 2)...)
+		}
 	}
 
-	return reconcileOrdersSimple(desired, openOrdersByTag, book, capUp, capDown)
+	return reconcileOrdersSimpleV2(desired, openOrdersByTag, book)
 }
 
-func reconcileOrdersSimple(
+func buildLadderWithSizes(side OrderSide, topBid int, sizes []float64, extraBackoff int) []DesiredOrder {
+	if topBid <= 0 {
+		return nil
+	}
+	sideTag := "DOWN"
+	if side == SideUp {
+		sideTag = "UP"
+	}
+
+	out := make([]DesiredOrder, 0, len(sizes))
+	for level := 0; level < len(sizes); level++ {
+		price := topBid - extraBackoff - level*ladderStep
+		if price < 1 {
+			continue
+		}
+		out = append(out, DesiredOrder{
+			side:  side,
+			price: price,
+			size:  sizes[level],
+			tag:   fmt.Sprintf("%s_L%d", sideTag, level),
+		})
+	}
+	return out
+}
+
+func reconcileOrdersSimpleV2(
 	desired []DesiredOrder,
 	openOrdersByTag map[string][]*Order,
 	book OrderBook,
-	capUp int,
-	capDown int,
 ) Plan {
 	desiredByTag := make(map[string]DesiredOrder, len(desired))
 	for _, d := range desired {
@@ -373,9 +439,8 @@ func reconcileOrdersSimple(
 		}
 
 		isClose := strings.HasPrefix(tag, "CLOSE_")
-		isUp := strings.HasPrefix(tag, "UP_") || strings.HasPrefix(tag, "CLOSE_UP")
-		isDown := strings.HasPrefix(tag, "DOWN_") || strings.HasPrefix(tag, "CLOSE_DOWN")
-		level := parseLadderLevel(tag)
+		isUp := strings.HasPrefix(tag, "UP_") || tag == "CLOSE_UP"
+		isDown := strings.HasPrefix(tag, "DOWN_") || tag == "CLOSE_DOWN"
 
 		keepIdx := pickBestOrderIndex(orders, want.price)
 		for i, o := range orders {
@@ -386,11 +451,13 @@ func reconcileOrdersSimple(
 				cancelByTag[tag] = append(cancelByTag[tag], o.ID)
 			}
 		}
+
 		if keepIdx < 0 || keepIdx >= len(orders) || orders[keepIdx] == nil {
 			continue
 		}
 		cur := orders[keepIdx]
 
+		// Maker validity: never sit at/above ask (unless close order).
 		if !isClose && isUp && cur.Price >= book.up.bestAsk {
 			cancelByTag[tag] = append(cancelByTag[tag], cur.ID)
 			continue
@@ -400,22 +467,8 @@ func reconcileOrdersSimple(
 			continue
 		}
 
-		if !isClose {
-			if isUp && cur.Price > capUp+safeCapCancelSlack {
-				cancelByTag[tag] = append(cancelByTag[tag], cur.ID)
-				continue
-			}
-			if isDown && cur.Price > capDown+safeCapCancelSlack {
-				cancelByTag[tag] = append(cancelByTag[tag], cur.ID)
-				continue
-			}
-		}
-
-		repriceDelta := 1
-		if !isClose {
-			repriceDelta = requoteDeltaL0 + 2*level
-		}
-		if intAbs(cur.Price-want.price) >= repriceDelta {
+		// Reduce churn: only requote if price moved meaningfully
+		if intAbs(cur.Price-want.price) >= requoteDelta {
 			cancelByTag[tag] = append(cancelByTag[tag], cur.ID)
 			continue
 		}
@@ -440,16 +493,99 @@ func reconcileOrdersSimple(
 	return Plan{cancelByTag: cancelByTag, place: places}
 }
 
-func parseLadderLevel(tag string) int {
-	i := strings.LastIndex(tag, "_L")
-	if i < 0 || i+2 >= len(tag) {
-		return 0
+// ============================================================================
+// Execution
+// ============================================================================
+
+func (s *Strategy) executePlan(marketID, upToken, downToken string, plan Plan) {
+	for tag, ids := range plan.cancelByTag {
+		if len(ids) == 0 {
+			continue
+		}
+		if err := s.executor.CancelOrders(ids, tag); err != nil {
+			log.Printf("cancel order failed: market=%s tag=%s err=%v", marketID, tag, err)
+		}
 	}
-	n, err := strconv.Atoi(tag[i+2:])
-	if err != nil || n < 0 {
-		return 0
+
+	for _, order := range plan.place {
+		tokenID := downToken
+		if order.side == SideUp {
+			tokenID = upToken
+		}
+
+		if order.price < 1 || order.price >= PayoutCents {
+			continue
+		}
+
+		size := normalizeOrderSize(order.size)
+		if size < PolymarketMinimumOrderSize {
+			continue
+		}
+
+		s.placeLimitBuy(marketID, tokenID, order.price, size, order.tag)
 	}
-	return n
+}
+
+func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
+	if qty < PolymarketMinimumOrderSize {
+		return ""
+	}
+	fPrice := float64(price) / 100.0
+	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
+	if err != nil {
+		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
+		return ""
+	}
+
+	AddOrder(&Order{
+		ID:           orderID,
+		MarketID:     marketID,
+		AssetID:      tokenID,
+		OriginalSize: qty,
+		MatchedSize:  0,
+		Price:        price,
+		Tag:          tag,
+	})
+	return orderID
+}
+
+// ============================================================================
+// Order helpers
+// ============================================================================
+
+func getOpenOrdersByTag(marketID string) map[string][]*Order {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+
+	set := MarketToOrderIDs[marketID]
+	if len(set) == 0 {
+		return map[string][]*Order{}
+	}
+	out := make(map[string][]*Order, len(set))
+	for id := range set {
+		o := Orders[id]
+		if o == nil || o.Tag == "" {
+			continue
+		}
+		out[o.Tag] = append(out[o.Tag], o)
+	}
+	return out
+}
+
+func pendingQtyForToken(openOrdersByTag map[string][]*Order, tokenID string) float64 {
+	total := 0.0
+	for _, orders := range openOrdersByTag {
+		for _, o := range orders {
+			if o == nil || o.AssetID != tokenID {
+				continue
+			}
+			rem := o.OriginalSize - o.MatchedSize
+			if rem > 0 {
+				total += rem
+			}
+		}
+	}
+	return total
 }
 
 func pickBestOrderIndex(orders []*Order, desiredPrice int) int {
@@ -485,116 +621,6 @@ func hasActiveNonCanceled(orders []*Order, canceledIDs []string) bool {
 		}
 	}
 	return false
-}
-
-func (s *Strategy) executePlan(marketID, upToken, downToken string, plan Plan) {
-	for tag, ids := range plan.cancelByTag {
-		if len(ids) == 0 {
-			continue
-		}
-		if err := s.executor.CancelOrders(ids, tag); err != nil {
-			log.Printf("cancel order failed: market=%s tag=%s err=%v", marketID, tag, err)
-		}
-	}
-
-	// Place after cancels (same tick)
-	for _, order := range plan.place {
-		tokenID := downToken
-		if order.side == SideUp {
-			tokenID = upToken
-		}
-
-		if order.price < 1 || order.price >= PayoutCents {
-			continue
-		}
-
-		size := normalizeOrderSize(order.size)
-		if size < PolymarketMinimumOrderSize {
-			continue
-		}
-
-		s.placeLimitBuy(marketID, tokenID, order.price, size, order.tag)
-	}
-}
-
-func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
-	if qty < PolymarketMinimumOrderSize {
-		return ""
-	}
-	fPrice := float64(price) / 100.0
-	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
-	if err != nil {
-		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
-		return ""
-	}
-	AddOrder(&Order{
-		ID:           orderID,
-		MarketID:     marketID,
-		AssetID:      tokenID,
-		OriginalSize: qty,
-		MatchedSize:  0,
-		Price:        price,
-		Tag:          tag,
-	})
-	return orderID
-}
-
-func buildLadder(side OrderSide, topBid int) []DesiredOrder {
-	if topBid <= 0 {
-		return nil
-	}
-	sideTag := "DOWN"
-	if side == SideUp {
-		sideTag = "UP"
-	}
-	out := make([]DesiredOrder, 0, len(ladderSizes))
-	for level := 0; level < len(ladderSizes); level++ {
-		price := topBid - level*ladderStep
-		if price < 1 {
-			continue
-		}
-		out = append(out, DesiredOrder{side: side, price: price, size: ladderSizes[level], tag: fmt.Sprintf("%s_L%d", sideTag, level)})
-	}
-	return out
-}
-
-func getOpenOrdersByTag(marketID string) map[string][]*Order {
-	ordersMu.RLock()
-	defer ordersMu.RUnlock()
-
-	set := MarketToOrderIDs[marketID]
-	if len(set) == 0 {
-		return map[string][]*Order{}
-	}
-	out := make(map[string][]*Order, len(set))
-	for id := range set {
-		o := Orders[id]
-		if o == nil || o.Tag == "" {
-			continue
-		}
-		out[o.Tag] = append(out[o.Tag], o)
-	}
-	return out
-}
-
-func pendingQtyForTokenUpToLevel(openOrdersByTag map[string][]*Order, tokenID string, maxLevel int) float64 {
-	total := 0.0
-	for tag, orders := range openOrdersByTag {
-		lvl := parseLadderLevel(tag)
-		if lvl > maxLevel {
-			continue
-		}
-		for _, o := range orders {
-			if o == nil || o.AssetID != tokenID {
-				continue
-			}
-			rem := o.OriginalSize - o.MatchedSize
-			if rem > 0 {
-				total += rem
-			}
-		}
-	}
-	return total
 }
 
 // ============================================================================
