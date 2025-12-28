@@ -12,6 +12,7 @@ import (
 var snapshot = make(map[string]any)
 
 func Snapshot(marketID string, upBestBidAsk, downBestBidAsk []*MarketOrder) {
+	SnapShotSave(marketID, upBestBidAsk, downBestBidAsk)
 }
 
 func SnapShotSave(marketID string, upBestBidAsk, downBestBidAsk []*MarketOrder) {

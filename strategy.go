@@ -114,7 +114,8 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	Snapshot(marketID, upBestBidAsk, downBestBidAsk)
+	//Snapshot(marketID, upBestBidAsk, downBestBidAsk)
+	//return
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
@@ -203,6 +204,7 @@ const (
 	pairSumLimit     = PayoutCents - profitFloorCents // 99
 
 	// inventory control
+	deadImbalance = 10
 	softImbalance = 20 // start leaning
 	hardImbalance = 80 // consider closing at ask
 
@@ -213,7 +215,7 @@ const (
 
 	// closing behavior
 	closeMaxQty       = 50
-	closeNearEndSec   = 5 * 60
+	closeNearEndSec   = 15 * 60
 	closeForceMaxCost = 99 // keep within [1..99] anyway
 )
 
@@ -235,19 +237,11 @@ func simulateMinPnLCents(st State, side OrderSide, price int, qty float64) float
 		return minPnLCents(st)
 	}
 	if side == SideUp {
-		newCost := st.upQty*st.upAvgCents + float64(price)*qty
-		newQty := st.upQty + qty
-		if newQty > 0 {
-			st.upAvgCents = newCost / newQty
-		}
-		st.upQty = newQty
+		st.upAvgCents = (st.upQty*st.upAvgCents + float64(price)*qty) / (st.upQty + qty)
+		st.upQty = st.upQty + qty
 	} else {
-		newCost := st.downQty*st.downAvgCents + float64(price)*qty
-		newQty := st.downQty + qty
-		if newQty > 0 {
-			st.downAvgCents = newCost / newQty
-		}
-		st.downQty = newQty
+		st.downAvgCents = (st.downQty*st.downAvgCents + float64(price)*qty) / (st.downQty + qty)
+		st.downQty = st.downQty + qty
 	}
 	return minPnLCents(st)
 }
@@ -261,18 +255,12 @@ func joinBid(bestBid, bestAsk int) int {
 	if bestAsk <= 1 {
 		return 1
 	}
-	if bestBid >= bestAsk {
-		return bestAsk - 1
-	}
-	if bestBid <= 0 {
-		return 1
-	}
-	return bestBid
+	return bestAsk - 1
 }
 
 func calculateMakerBidsV2(book OrderBook, net float64) (bidUp, bidDown int) {
-	bidUp = joinBid(book.up.bestBid, book.up.bestAsk)
-	bidDown = joinBid(book.down.bestBid, book.down.bestAsk)
+	bidUp = maxInt(1, book.up.bestAsk-1)
+	bidDown = max(1, book.down.bestAsk-1)
 
 	// Inventory skew: push quotes towards the side we need (short side)
 	skew := clampInt(int(math.Abs(net)*2/softImbalance), 0, 4)
@@ -293,9 +281,9 @@ func calculateMakerBidsV2(book OrderBook, net float64) (bidUp, bidDown int) {
 	sum := bidUp + bidDown
 	if sum > pairSumLimit {
 		over := sum - pairSumLimit
-		if net > 0 {
+		if net > deadImbalance {
 			bidUp = maxInt(1, bidUp-over)
-		} else if net < 0 {
+		} else if net < -deadImbalance {
 			bidDown = maxInt(1, bidDown-over)
 		} else {
 			half := (over + 1) / 2
@@ -306,6 +294,13 @@ func calculateMakerBidsV2(book OrderBook, net float64) (bidUp, bidDown int) {
 
 	bidUp = clampInt(bidUp, 1, maxInt(1, book.up.bestAsk-1))
 	bidDown = clampInt(bidDown, 1, maxInt(1, book.down.bestAsk-1))
+
+	if net > hardImbalance {
+		bidUp = clampInt(bidUp-4, 0, book.up.bestAsk-1)
+	} else if net < -hardImbalance {
+		bidDown = clampInt(bidDown-4, 0, book.down.bestAsk-1)
+	}
+
 	return
 }
 
@@ -339,26 +334,25 @@ func TradingDecision(
 	// ---- CLOSE LOGIC (your snippet) ----
 	// Use ask to rebalance only if it IMPROVES minPnL.
 	// Trigger: hard imbalance OR near end (optional but helps stop tail losses).
-	if absNet >= hardImbalance || timeLeft <= closeNearEndSec {
+	if timeLeft <= closeNearEndSec {
 		needSide := SideUp
 		ask := book.up.bestAsk
+		tag := "CLOSE_UP"
+
 		if net > 0 {
 			needSide = SideDown
 			ask = book.down.bestAsk
+			tag = "CLOSE_DOWN"
 		}
 
 		ask = clampInt(ask, 1, closeForceMaxCost)
 		size := math.Min(absNet, closeMaxQty)
 
-		if size >= minQty && ask > 0 {
+		if size >= minQty {
 			before := minPnLCents(state)
 			after := simulateMinPnLCents(state, needSide, ask, size)
 
 			if after > before {
-				tag := "CLOSE_UP"
-				if needSide == SideDown {
-					tag = "CLOSE_DOWN"
-				}
 				desired = append(desired, DesiredOrder{
 					side:  needSide,
 					price: ask,
@@ -373,24 +367,24 @@ func TradingDecision(
 	// Balanced: quote both with full ladder.
 	// Imbalanced: quote mainly the short side; keep long side passive (smaller + further back).
 	if absNet <= softImbalance {
-		desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced, 0)...)
-		desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced, 0)...)
+		desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced)...)
+		desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced)...)
 	} else {
 		if net > 0 {
 			// long UP -> focus on DOWN
-			desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced, 0)...)
-			desired = append(desired, buildLadderWithSizes(SideUp, bidUp-2, ladderSizesPassive, 2)...)
+			desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesBalanced)...)
+			desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesPassive)...)
 		} else {
 			// long DOWN -> focus on UP
-			desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced, 0)...)
-			desired = append(desired, buildLadderWithSizes(SideDown, bidDown-2, ladderSizesPassive, 2)...)
+			desired = append(desired, buildLadderWithSizes(SideUp, bidUp, ladderSizesBalanced)...)
+			desired = append(desired, buildLadderWithSizes(SideDown, bidDown, ladderSizesPassive)...)
 		}
 	}
 
 	return reconcileOrdersSimpleV2(desired, openOrdersByTag, book)
 }
 
-func buildLadderWithSizes(side OrderSide, topBid int, sizes []float64, extraBackoff int) []DesiredOrder {
+func buildLadderWithSizes(side OrderSide, topBid int, sizes []float64) []DesiredOrder {
 	if topBid <= 0 {
 		return nil
 	}
@@ -401,7 +395,7 @@ func buildLadderWithSizes(side OrderSide, topBid int, sizes []float64, extraBack
 
 	out := make([]DesiredOrder, 0, len(sizes))
 	for level := 0; level < len(sizes); level++ {
-		price := topBid - extraBackoff - level*ladderStep
+		price := topBid - level*ladderStep
 		if price < 1 {
 			continue
 		}
