@@ -317,9 +317,9 @@ func (c *ClobClient) GetFeeRateBps(tokenID string) (int, error) {
 	return baseFee, nil
 }
 
-func (c *ClobClient) CreateOrder(orderArgs OrderArgs, options *PartialCreateOrderOptions) (SignedOrder, error) {
+func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (*SignedOrder, error) {
 	if err := c.assertLevel1(); err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	if orderArgs.Taker == "" {
 		orderArgs.Taker = ZeroAddress
@@ -327,20 +327,20 @@ func (c *ClobClient) CreateOrder(orderArgs OrderArgs, options *PartialCreateOrde
 
 	tickSize, err := c.resolveTickSize(orderArgs.TokenID, options)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	if !PriceValid(orderArgs.Price, tickSize) {
-		return SignedOrder{}, fmt.Errorf("price (%f), min: %s - max: %f", orderArgs.Price, tickSize, 1-parseFloatDefault(tickSize))
+		return nil, fmt.Errorf("price (%f), min: %s - max: %f", orderArgs.Price, tickSize, 1-parseFloatDefault(tickSize))
 	}
 
 	negRisk, err := c.resolveNegRisk(orderArgs.TokenID, options)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 
 	feeRate, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	orderArgs.FeeRateBps = feeRate
 
@@ -387,7 +387,7 @@ func (c *ClobClient) CreateMarketOrder(orderArgs MarketOrderArgs, options *Parti
 	return c.builder.CreateMarketOrder(orderArgs, CreateOrderOptions{TickSize: tickSize, NegRisk: negRisk})
 }
 
-func (c *ClobClient) PostOrder(order SignedOrder, orderType OrderType) (any, error) {
+func (c *ClobClient) PostOrder(order *SignedOrder, orderType OrderType) (any, error) {
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
 	}

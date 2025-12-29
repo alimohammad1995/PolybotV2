@@ -55,7 +55,7 @@ type MarketOrderArgs struct {
 }
 
 type PostOrdersArgs struct {
-	Order     SignedOrder
+	Order     *SignedOrder
 	OrderType OrderType
 }
 
@@ -109,7 +109,7 @@ type ContractConfig struct {
 }
 
 type SignedOrder struct {
-	Order     Order
+	Order     *Order
 	Signature string
 }
 

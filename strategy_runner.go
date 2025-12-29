@@ -227,6 +227,12 @@ func (s *Strategy) executePlan(marketID, upToken, downToken string, plan *Plan) 
 		log.Printf("cancel order failed: market=%s err=%v", marketID, err)
 	}
 
+	marketIDs := make([]string, 0, len(plan.place))
+	tokenIDs := make([]string, 0, len(plan.place))
+	prices := make([]int, 0, len(plan.place))
+	sizes := make([]float64, 0, len(plan.place))
+	tags := make([]string, 0, len(plan.place))
+
 	for _, order := range plan.place {
 		tokenID := downToken
 		if order.side == SideUp {
@@ -242,32 +248,41 @@ func (s *Strategy) executePlan(marketID, upToken, downToken string, plan *Plan) 
 			continue
 		}
 
-		s.placeLimitBuy(marketID, tokenID, order.price, size, order.tag)
+		marketIDs = append(marketIDs, marketID)
+		tokenIDs = append(tokenIDs, tokenID)
+		prices = append(prices, order.price)
+		sizes = append(sizes, size)
+		tags = append(tags, order.tag)
 	}
+
+	s.placeLimitBuy(marketIDs, tokenIDs, prices, sizes, tags)
 }
 
-func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
-	if qty < PolymarketMinimumOrderSize {
-		return ""
+func (s *Strategy) placeLimitBuy(marketID, tokenID []string, price []int, qty []float64, tag []string) {
+	pricesFloat := make([]float64, len(price))
+	for i, p := range price {
+		pricesFloat[i] = float64(p) / 100.0
 	}
-	fPrice := float64(price) / 100.0
+
 	log.Printf("order submit: side=buy token=%s price=%d size=%.4f tag=%s", tokenID, price, qty, tag)
 
-	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
+	orderIDs, err := s.executor.BuyLimits(tokenID, pricesFloat, qty, polymarket.OrderTypeGTC)
 	if err != nil {
 		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
-		return ""
+		return
 	}
-	AddOrder(&Order{
-		ID:           orderID,
-		MarketID:     marketID,
-		AssetID:      tokenID,
-		OriginalSize: qty,
-		MatchedSize:  0,
-		Price:        price,
-		Tag:          tag,
-	})
-	return orderID
+
+	for i, orderID := range orderIDs {
+		AddOrder(&Order{
+			ID:           orderID,
+			MarketID:     marketID[i],
+			AssetID:      tokenID[i],
+			OriginalSize: qty[i],
+			MatchedSize:  0,
+			Price:        price[i],
+			Tag:          tag[i],
+		})
+	}
 }
 
 func (s *Strategy) getOpenOrdersByTag(marketID string) map[string][]*Order {

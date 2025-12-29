@@ -15,7 +15,7 @@ func NewOrderExecutor(client *PolymarketClient) *OrderExecutor {
 }
 
 func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType polymarket.OrderType) (string, error) {
-	args := polymarket.OrderArgs{
+	args := &polymarket.OrderArgs{
 		TokenID: tokenID,
 		Price:   price,
 		Size:    size,
@@ -50,7 +50,7 @@ func (e *OrderExecutor) BuyLimits(tokenIDs []string, prices, sizes []float64, or
 
 	postArgs := make([]polymarket.PostOrdersArgs, 0, len(tokenIDs))
 	for i, tokenID := range tokenIDs {
-		args := polymarket.OrderArgs{
+		args := &polymarket.OrderArgs{
 			TokenID: tokenID,
 			Price:   prices[i],
 			Size:    sizes[i],

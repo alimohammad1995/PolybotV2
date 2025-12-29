@@ -19,7 +19,7 @@ type Order struct {
 	SignatureType uint8
 }
 
-func (o Order) ToMap() map[string]any {
+func (o *Order) ToMap() map[string]any {
 	return map[string]any{
 		"salt":          o.Salt,
 		"maker":         o.Maker,
@@ -36,7 +36,7 @@ func (o Order) ToMap() map[string]any {
 	}
 }
 
-func (s SignedOrder) ToMap() map[string]any {
+func (s *SignedOrder) ToMap() map[string]any {
 	m := s.Order.ToMap()
 	m["signature"] = s.Signature
 	if side, ok := m["side"].(uint8); ok {
@@ -49,7 +49,7 @@ func (s SignedOrder) ToMap() map[string]any {
 	return m
 }
 
-func (s SignedOrder) ToJSONMap() map[string]any {
+func (s *SignedOrder) ToJSONMap() map[string]any {
 	m := s.ToMap()
 
 	m["expiration"] = s.Order.Expiration.String()

@@ -56,7 +56,7 @@ func SignClobAuthMessage(signer *Signer, timestamp int64, nonce int64) (string, 
 	return signer.SignHash(digest)
 }
 
-func BuildOrderTypedData(order Order, chainID int, exchange string) (*apitypes.TypedData, error) {
+func BuildOrderTypedData(order *Order, chainID int, exchange string) (*apitypes.TypedData, error) {
 	message := apitypes.TypedDataMessage{
 		"salt":          order.Salt,
 		"maker":         order.Maker,

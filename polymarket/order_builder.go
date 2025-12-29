@@ -100,16 +100,16 @@ func (b *OrderBuilder) getMarketOrderAmounts(side OrderSide, amount, price float
 	}
 }
 
-func (b *OrderBuilder) CreateOrder(orderArgs OrderArgs, options CreateOrderOptions) (SignedOrder, error) {
+func (b *OrderBuilder) CreateOrder(orderArgs *OrderArgs, options CreateOrderOptions) (*SignedOrder, error) {
 	config, ok := roundingConfig[options.TickSize]
 	if !ok {
-		return SignedOrder{}, errors.New("invalid tick size")
+		return nil, errors.New("invalid tick size")
 	}
 	side, makerAmount, takerAmount, err := b.getOrderAmounts(orderArgs.Side, orderArgs.Size, orderArgs.Price, config)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
-	order := Order{
+	order := &Order{
 		Salt:          big.NewInt(generateSeed()),
 		Maker:         b.funder,
 		Signer:        b.signer.Address(),
@@ -120,7 +120,7 @@ func (b *OrderBuilder) CreateOrder(orderArgs OrderArgs, options CreateOrderOptio
 		Expiration:    big.NewInt(orderArgs.Expiration),
 		Nonce:         big.NewInt(orderArgs.Nonce),
 		FeeRateBps:    big.NewInt(int64(orderArgs.FeeRateBps)),
-		Side:          uint8(side),
+		Side:          side,
 		SignatureType: b.sigType,
 	}
 	if order.Taker == "" {
@@ -129,27 +129,27 @@ func (b *OrderBuilder) CreateOrder(orderArgs OrderArgs, options CreateOrderOptio
 
 	contractCfg, err := GetContractConfig(b.signer.ChainID(), options.NegRisk)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	tokenID, err := parseBigInt(orderArgs.TokenID)
 	if err != nil || tokenID == nil {
-		return SignedOrder{}, errors.New("invalid token id")
+		return nil, errors.New("invalid token id")
 	}
 	order.TokenID = tokenID
 
 	typed, err := BuildOrderTypedData(order, b.signer.ChainID(), contractCfg.Exchange)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	digest, err := hashTypedData(typed)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
 	signature, err := b.signer.SignHash(digest)
 	if err != nil {
-		return SignedOrder{}, err
+		return nil, err
 	}
-	return SignedOrder{Order: order, Signature: signature}, nil
+	return &SignedOrder{Order: order, Signature: signature}, nil
 }
 
 func (b *OrderBuilder) CreateMarketOrder(orderArgs MarketOrderArgs, options CreateOrderOptions) (SignedOrder, error) {
@@ -161,7 +161,7 @@ func (b *OrderBuilder) CreateMarketOrder(orderArgs MarketOrderArgs, options Crea
 	if err != nil {
 		return SignedOrder{}, err
 	}
-	order := Order{
+	order := &Order{
 		Salt:          big.NewInt(generateSeed()),
 		Maker:         b.funder,
 		Signer:        b.signer.Address(),
