@@ -113,7 +113,7 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	snapshotManager.Tick(fmt.Sprintf("%d", marketInfo.StartDateTS), upBestBidAsk, downBestBidAsk)
+	snapshotManager.Tick(fmt.Sprintf("%s", marketInfo.Slug), upBestBidAsk, downBestBidAsk)
 	return
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)

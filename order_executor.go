@@ -40,6 +40,43 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 	return orderID, nil
 }
 
+func (e *OrderExecutor) BuyLimits(tokenIDs []string, prices, sizes []float64, orderType polymarket.OrderType) ([]string, error) {
+	if len(tokenIDs) == 0 {
+		return nil, nil
+	}
+	if orderType == "" {
+		orderType = polymarket.OrderTypeGTC
+	}
+
+	postArgs := make([]polymarket.PostOrdersArgs, 0, len(tokenIDs))
+	for i, tokenID := range tokenIDs {
+		args := polymarket.OrderArgs{
+			TokenID: tokenID,
+			Price:   prices[i],
+			Size:    sizes[i],
+			Side:    polymarket.SideBuy,
+		}
+		order, err := e.client.client.CreateOrder(args, nil)
+		if err != nil {
+			return nil, err
+		}
+		postArgs = append(postArgs, polymarket.PostOrdersArgs{
+			Order:     order,
+			OrderType: orderType,
+		})
+	}
+
+	res, err := e.client.client.PostOrders(postArgs)
+	if err != nil {
+		return nil, err
+	}
+	orderIDs, success := parseOrderIDs(res)
+	if !success {
+		return nil, errors.New("orders failed")
+	}
+	return orderIDs, nil
+}
+
 func (e *OrderExecutor) CancelOrders(orderIDs []string, because string) error {
 	if len(orderIDs) == 0 {
 		return nil
@@ -59,7 +96,10 @@ func parseOrderID(resp any) (string, bool) {
 	if resp == nil {
 		return "", false
 	}
-	v := resp.(map[string]any)
+	v, ok := resp.(map[string]any)
+	if !ok {
+		return "", false
+	}
 
 	success, _ := v["success"].(bool)
 	if !success {
@@ -70,4 +110,18 @@ func parseOrderID(resp any) (string, bool) {
 	}
 
 	return "", false
+}
+
+func parseOrderIDs(resp any) ([]string, bool) {
+	if resp == nil {
+		return nil, false
+	}
+	v := resp.([]any)
+	orderIDs := make([]string, 0, len(v))
+	for _, item := range v {
+		if id, ok := parseOrderID(item); ok {
+			orderIDs = append(orderIDs, id)
+		}
+	}
+	return orderIDs, len(orderIDs) > 0
 }

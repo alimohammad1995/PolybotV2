@@ -54,6 +54,11 @@ type MarketOrderArgs struct {
 	OrderType  OrderType
 }
 
+type PostOrdersArgs struct {
+	Order     SignedOrder
+	OrderType OrderType
+}
+
 type BookParams struct {
 	TokenID string
 	Side    string

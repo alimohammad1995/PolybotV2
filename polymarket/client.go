@@ -409,6 +409,34 @@ func (c *ClobClient) PostOrder(order SignedOrder, orderType OrderType) (any, err
 	return c.http.Request("POST", c.clobHost+PostOrderEndpoint, headers, reqArgs.SerializedBody)
 }
 
+func (c *ClobClient) PostOrders(args []PostOrdersArgs) (any, error) {
+	if err := c.assertLevel2(); err != nil {
+		return nil, err
+	}
+	if len(args) == 0 {
+		return nil, nil
+	}
+	body := make([]map[string]any, 0, len(args))
+	for _, arg := range args {
+		body = append(body, map[string]any{
+			"order":     arg.Order.ToJSONMap(),
+			"owner":     c.creds.APIKey,
+			"orderType": arg.OrderType,
+		})
+	}
+	serialized, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	reqArgs := RequestArgs{Method: "POST", RequestPath: PostOrdersEndpoint, Body: body, SerializedBody: string(serialized)}
+	headers, err := CreateLevel2Headers(c.signer, *c.creds, reqArgs)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Request("POST", c.clobHost+PostOrdersEndpoint, headers, reqArgs.SerializedBody)
+}
+
 func (c *ClobClient) CancelAllOrders() (any, error) {
 	if err := c.assertLevel2(); err != nil {
 		return nil, err
