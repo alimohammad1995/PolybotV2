@@ -1,0 +1,300 @@
+package main
+
+import (
+	"Polybot/polymarket"
+	"fmt"
+	"log"
+	"math"
+	"sync"
+	"time"
+)
+
+const Workers = 5
+
+const (
+	PayoutCents = 100
+)
+
+// ============================================================================
+// Strategy runner (unchanged behavior, but rate-limited per market)
+// ============================================================================
+
+type Strategy struct {
+	executor *OrderExecutor
+	markets  chan string
+
+	pending   map[string]bool
+	pendingMu *sync.Mutex
+}
+
+func NewStrategy(client *PolymarketClient) *Strategy {
+	s := &Strategy{
+		executor:  NewOrderExecutor(client),
+		markets:   make(chan string, Workers),
+		pending:   make(map[string]bool),
+		pendingMu: &sync.Mutex{},
+	}
+	s.Run()
+	return s
+}
+
+func (s *Strategy) OnUpdate(assetID []string) {
+	s.enqueueMarketsFromAssets(assetID)
+}
+
+func (s *Strategy) Run() {
+	for i := 0; i < Workers; i++ {
+		go func() {
+			for {
+				market := <-s.markets
+				s.handle(market)
+				s.markDone(market)
+			}
+		}()
+	}
+}
+
+func (s *Strategy) enqueueMarketsFromAssets(assetIDs []string) {
+	if len(assetIDs) == 0 {
+		return
+	}
+	marketsToCheck := make(map[string]bool)
+	for _, id := range assetIDs {
+		if marketID, ok := GetMarketIDByToken(id); ok {
+			marketsToCheck[marketID] = true
+		}
+	}
+	for marketID := range marketsToCheck {
+		s.enqueueMarket(marketID)
+	}
+}
+
+func (s *Strategy) enqueueMarket(marketID string) {
+	s.pendingMu.Lock()
+	if s.pending[marketID] {
+		s.pendingMu.Unlock()
+		return
+	}
+	s.pending[marketID] = true
+	s.pendingMu.Unlock()
+	s.markets <- marketID
+}
+
+func (s *Strategy) markDone(marketID string) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.pending[marketID] = false
+}
+
+func (s *Strategy) handle(marketID string) {
+	if !IsActiveMarket(marketID) {
+		return
+	}
+
+	marketInfo := GetMarketInfo(marketID)
+	if marketInfo == nil {
+		return
+	}
+
+	now := time.Now().Unix()
+	timeLeftSec := int(marketInfo.EndDateTS - now)
+	elapsedSec := int(now - marketInfo.StartDateTS)
+
+	if timeLeftSec <= 0 || elapsedSec <= 10 {
+		return
+	}
+
+	upToken := marketInfo.ClobTokenIDs[0]
+	downToken := marketInfo.ClobTokenIDs[1]
+
+	upBestBidAsk := GetBestBidAsk(upToken)
+	downBestBidAsk := GetBestBidAsk(downToken)
+	if upBestBidAsk[0] == nil || upBestBidAsk[1] == nil || downBestBidAsk[0] == nil || downBestBidAsk[1] == nil {
+		return
+	}
+
+	snapshotManager.Tick(fmt.Sprintf("%d", marketInfo.StartDateTS), upBestBidAsk, downBestBidAsk)
+	return
+
+	upQty, upAvg, _ := GetAssetPosition(upToken)
+	downQty, downAvg, _ := GetAssetPosition(downToken)
+
+	state := &State{
+		upQty:        upQty,
+		downQty:      downQty,
+		upAvgCents:   upAvg,
+		downAvgCents: downAvg,
+	}
+
+	book := &OrderBook{
+		up: &OrderBookSide{
+			bestBid:     upBestBidAsk[0].Price,
+			bestBidSize: upBestBidAsk[0].Size,
+			bestAsk:     upBestBidAsk[1].Price,
+			bestAskSize: upBestBidAsk[1].Size,
+		},
+		down: &OrderBookSide{
+			bestBid:     downBestBidAsk[0].Price,
+			bestBidSize: downBestBidAsk[0].Size,
+			bestAsk:     downBestBidAsk[1].Price,
+			bestAskSize: downBestBidAsk[1].Size,
+		},
+	}
+
+	openOrdersByTag := s.getOpenOrdersByTag(marketID)
+	plan := TradingDecision(state, book, timeLeftSec, openOrdersByTag, upToken, downToken)
+	s.executePlan(marketID, upToken, downToken, plan)
+}
+
+type State struct {
+	upQty        float64
+	downQty      float64
+	upAvgCents   float64
+	downAvgCents float64
+}
+
+func (st *State) pnl() float64 {
+	minQty := math.Min(st.upQty, st.downQty)
+	totalCost := st.upQty*st.upAvgCents + st.downQty*st.downAvgCents
+	return minQty*PayoutCents - totalCost
+}
+
+func (st *State) simulate(side OrderSide, price int, qty float64) float64 {
+	newState := st.clone()
+
+	switch side {
+	case SideUp:
+		newState.upAvgCents = newState.upQty*newState.upAvgCents + float64(price)*qty
+		newState.upQty += qty
+	case SideDown:
+		newState.downAvgCents = newState.downQty*newState.downAvgCents + float64(price)*qty
+		newState.downQty += qty
+	}
+
+	return st.pnl()
+}
+
+func (st *State) clone() *State {
+	return &State{
+		upQty:        st.upQty,
+		downQty:      st.downQty,
+		upAvgCents:   st.upAvgCents,
+		downAvgCents: st.downAvgCents,
+	}
+}
+
+type OrderBookSide struct {
+	bestBid     int
+	bestBidSize float64
+	bestAsk     int
+	bestAskSize float64
+}
+
+type OrderBook struct {
+	up   *OrderBookSide
+	down *OrderBookSide
+}
+
+type OrderSide string
+
+const (
+	SideUp   OrderSide = "UP"
+	SideDown           = "DOWN"
+)
+
+type DesiredOrder struct {
+	side  OrderSide
+	price int
+	size  float64
+	tag   string
+}
+
+type Plan struct {
+	place       []*DesiredOrder
+	cancelByTag map[string][]string
+}
+
+func (s *Strategy) executePlan(marketID, upToken, downToken string, plan *Plan) {
+	cancelIDs := make([]string, 0, 10)
+
+	for _, ids := range plan.cancelByTag {
+		if len(ids) == 0 {
+			continue
+		}
+		cancelIDs = append(cancelIDs, ids...)
+	}
+	if err := s.executor.CancelOrders(cancelIDs, "canceling"); err != nil {
+		log.Printf("cancel order failed: market=%s err=%v", marketID, err)
+	}
+
+	for _, order := range plan.place {
+		tokenID := downToken
+		if order.side == SideUp {
+			tokenID = upToken
+		}
+
+		if order.price < 1 || order.price >= PayoutCents {
+			continue
+		}
+
+		size := normalizeOrderSize(order.size)
+		if size < PolymarketMinimumOrderSize {
+			continue
+		}
+
+		s.placeLimitBuy(marketID, tokenID, order.price, size, order.tag)
+	}
+}
+
+func (s *Strategy) placeLimitBuy(marketID, tokenID string, price int, qty float64, tag string) string {
+	if qty < PolymarketMinimumOrderSize {
+		return ""
+	}
+	fPrice := float64(price) / 100.0
+	log.Printf("order submit: side=buy token=%s price=%d size=%.4f tag=%s", tokenID, price, qty, tag)
+
+	orderID, err := s.executor.BuyLimit(tokenID, fPrice, qty, polymarket.OrderTypeGTC)
+	if err != nil {
+		log.Printf("place buy failed: market=%s token=%s price=%d qty=%.4f err=%v", marketID, tokenID, price, qty, err)
+		return ""
+	}
+	AddOrder(&Order{
+		ID:           orderID,
+		MarketID:     marketID,
+		AssetID:      tokenID,
+		OriginalSize: qty,
+		MatchedSize:  0,
+		Price:        price,
+		Tag:          tag,
+	})
+	return orderID
+}
+
+func (s *Strategy) getOpenOrdersByTag(marketID string) map[string][]*Order {
+	ordersMu.RLock()
+	defer ordersMu.RUnlock()
+
+	set := MarketToOrderIDs[marketID]
+	if len(set) == 0 {
+		return map[string][]*Order{}
+	}
+	out := make(map[string][]*Order, len(set))
+	for id := range set {
+		o := Orders[id]
+		if math.Abs(o.OriginalSize-o.MatchedSize) <= eps {
+			continue
+		}
+		out[o.Tag] = append(out[o.Tag], o)
+	}
+	return out
+}
+
+func normalizeOrderSize(size float64) float64 {
+	if size <= 0 {
+		return 0
+	}
+	if size < PolymarketMinimumOrderSize {
+		return PolymarketMinimumOrderSize
+	}
+	return size
+}

@@ -22,8 +22,6 @@ func (e *OrderExecutor) BuyLimit(tokenID string, price, size float64, orderType 
 		Side:    polymarket.SideBuy,
 	}
 
-	log.Printf("order submit: side=buy token=%s price=%.4f size=%.4f type=%s", tokenID, price, size, orderType)
-
 	order, err := e.client.client.CreateOrder(args, nil)
 	if err != nil {
 		return "", err

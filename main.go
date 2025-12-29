@@ -23,6 +23,7 @@ func run(market string) {
 	SetActiveMarkets(market, gamma)
 
 	strategy := NewStrategy(client)
+	snapshotManager.Run()
 
 	InitAssets(client)
 	InitOrders(client)

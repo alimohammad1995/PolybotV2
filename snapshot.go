@@ -6,35 +6,71 @@ import (
 	"io/ioutil"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 )
 
-var snapshot = make(map[string]any)
+var snapshotManager = NewSnapshot()
 
-func Snapshot(marketID string, upBestBidAsk, downBestBidAsk []*MarketOrder) {
-	SnapShotSave(marketID, upBestBidAsk, downBestBidAsk)
+type Snapshot struct {
+	mu       sync.RWMutex
+	marketID string
+	snapshot map[string]any
 }
 
-func SnapShotSave(marketID string, upBestBidAsk, downBestBidAsk []*MarketOrder) {
+func NewSnapshot() *Snapshot {
+	return &Snapshot{
+		snapshot: make(map[string]any),
+	}
+}
+
+func (s *Snapshot) Run() {
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			s.Save()
+		}
+	}()
+}
+
+func (s *Snapshot) Tick(marketID string, upBestBidAsk, downBestBidAsk []*MarketOrder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	snapshotManager.marketID = marketID
+
 	now := time.Now().Unix()
 
-	if _, ok := snapshot[marketID]; !ok {
-		snapshot[marketID] = make(map[string]any)
+	if _, ok := s.snapshot[marketID]; !ok {
+		s.snapshot[marketID] = make(map[string]any)
 	}
 
-	marketSnapshot, ok := snapshot[marketID].(map[string]any)
+	marketSnapshot, ok := s.snapshot[marketID].(map[string]any)
 
 	if !ok {
 		marketSnapshot = make(map[string]any)
-		snapshot[marketID] = marketSnapshot
+		s.snapshot[marketID] = marketSnapshot
 	}
 
 	marketSnapshot[strconv.FormatInt(now, 10)] = map[string]any{
 		"up":   upBestBidAsk,
 		"down": downBestBidAsk,
 	}
+}
 
-	data, err := json.MarshalIndent(snapshot[marketID], "", "  ")
+func (s *Snapshot) Save() {
+	s.mu.RLock()
+	marketID := s.marketID
+	if marketID == "" {
+		s.mu.RUnlock()
+		return
+	}
+
+	data, err := json.MarshalIndent(s.snapshot[marketID], "", "  ")
+	s.mu.RUnlock()
+
 	if err != nil {
 		log.Printf("failed to marshal snapshot: %v", err)
 		return
