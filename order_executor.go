@@ -92,6 +92,15 @@ func (e *OrderExecutor) CancelOrders(orderIDs []string, because string) error {
 	return err
 }
 
+func (e *OrderExecutor) CancelAllOrders(marketID string) error {
+	orderIDs := GetOrderIDsByMarket(marketID, "")
+	_, err := e.client.client.CancelOrders(orderIDs)
+	if err == nil {
+		DeleteOrder(orderIDs...)
+	}
+	return err
+}
+
 func parseOrderID(resp any) (string, bool) {
 	if resp == nil {
 		return "", false

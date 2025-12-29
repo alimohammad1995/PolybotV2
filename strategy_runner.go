@@ -2,7 +2,6 @@ package main
 
 import (
 	"Polybot/polymarket"
-	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -113,8 +112,8 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	snapshotManager.Tick(fmt.Sprintf("%s", marketInfo.Slug), upBestBidAsk, downBestBidAsk)
-	return
+	//snapshotManager.Tick(fmt.Sprintf("%s", marketInfo.Slug), upBestBidAsk, downBestBidAsk)
+	//return
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
@@ -157,6 +156,14 @@ func (st *State) pnl() float64 {
 	minQty := math.Min(st.upQty, st.downQty)
 	totalCost := st.upQty*st.upAvgCents + st.downQty*st.downAvgCents
 	return minQty*PayoutCents - totalCost
+}
+
+func (st *State) net() float64 {
+	return st.upQty - st.downQty
+}
+
+func (st *State) absNet() float64 {
+	return math.Abs(st.net())
 }
 
 func (st *State) simulate(side OrderSide, price int, qty float64) float64 {
@@ -259,6 +266,10 @@ func (s *Strategy) executePlan(marketID, upToken, downToken string, plan *Plan) 
 }
 
 func (s *Strategy) placeLimitBuy(marketID, tokenID []string, price []int, qty []float64, tag []string) {
+	if len(marketID) == 0 {
+		return
+	}
+
 	pricesFloat := make([]float64, len(price))
 	for i, p := range price {
 		pricesFloat[i] = float64(p) / 100.0

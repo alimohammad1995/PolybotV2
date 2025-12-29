@@ -37,6 +37,10 @@ type Order struct {
 	Tag          string
 }
 
+func (order *Order) Remaining() float64 {
+	return order.OriginalSize - order.MatchedSize
+}
+
 type Asset struct {
 	AssetID      string
 	MarketID     string

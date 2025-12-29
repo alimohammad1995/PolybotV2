@@ -8,10 +8,11 @@ import (
 const (
 	minQty = 5
 
-	profitFloorCents = 4
+	timeLeftForPositivePNLStop = 3 * 60
+	profitFloorCents           = 4
 
 	deadImbalance = 5
-	softImbalance = 10
+	softImbalance = 20
 	hardImbalance = 80
 
 	ladderStep = 1
@@ -26,9 +27,6 @@ func TradingDecision(
 	openOrdersByTag map[string][]*Order,
 	upToken, downToken string,
 ) *Plan {
-	askUp := book.up.bestAsk
-	askDown := book.down.bestAsk
-
 	pendingUp := 0.0
 	pendingDown := 0.0
 
@@ -37,45 +35,17 @@ func TradingDecision(
 
 	desired := make([]*DesiredOrder, 0, 16)
 
-	{
-		var needSide OrderSide
-		var ask int
-
-		if net < 0 {
-			needSide = SideUp
-			ask = askUp
-		} else if net > 0 {
-			needSide = SideDown
-			ask = askDown
-		}
-
-		if ask > 0 {
-			size := math.Min(absNet, 50)
-			if size >= minQty {
-				before := state.pnl()
-				after := state.simulate(needSide, ask, size)
-
-				if after > before {
-					tag := "CLOSE_UP"
-
-					if needSide == SideDown {
-						tag = "CLOSE_DOWN"
-					}
-
-					desired = append(desired, &DesiredOrder{
-						side:  needSide,
-						price: ask,
-						size:  size,
-						tag:   tag,
-					})
-
-					return reconcileOrdersSimple(desired, openOrdersByTag)
-				}
-			}
-		}
+	closeOrder := tryProfitableClose(state, book, net, absNet)
+	if closeOrder != nil {
+		desired = append(desired, closeOrder)
+		return reconcileOrders(desired, openOrdersByTag)
 	}
 
-	bidUp, bidDown := calculateMakerBids(book, net)
+	if timeLeft <= timeLeftForPositivePNLStop && state.pnl() > 0 {
+		return reconcileOrders(nil, openOrdersByTag)
+	}
+
+	bidUp, bidDown := calculateMakerBids(book, state, timeLeft)
 
 	if bidUp > 0 {
 		desired = append(desired, buildLadder(SideUp, bidUp)...)
@@ -84,50 +54,53 @@ func TradingDecision(
 		desired = append(desired, buildLadder(SideDown, bidDown)...)
 	}
 
-	return reconcileOrdersSimple(desired, openOrdersByTag)
+	return reconcileOrders(desired, openOrdersByTag)
 }
 
-func calculateMakerBids(book *OrderBook, net float64) (int, int) {
+func calculateMakerBids(book *OrderBook, state *State, timeLeft int) (int, int) {
 	askUp := book.up.bestAsk
 	askDown := book.down.bestAsk
+	bidUp := book.up.bestBid
+	bidDown := book.down.bestBid
 
-	bidUp := minInt(book.up.bestBid+1, askUp-1)
-	bidDown := minInt(book.down.bestBid+1, askDown-1)
+	targetBidUp := minInt(bidUp+1, askUp-1)
+	targetBidDown := minInt(bidDown+1, askDown-1)
 
-	bidUp = clampInt(bidUp, 1, askUp-1)
-	bidDown = clampInt(bidDown, 1, askDown-1)
+	targetBidUp = clampInt(targetBidUp, 1, askUp-1)
+	targetBidDown = clampInt(targetBidDown, 1, askDown-1)
 
-	skew := clampInt(int(math.Floor(math.Abs(net)/softImbalance)), 0, 4)
-	if net > 0 {
-		bidUp -= skew
-		bidDown += skew
-	} else if net < 0 {
-		bidUp += skew
-		bidDown -= skew
+	skew := clampInt(int(math.Floor(math.Abs(state.upQty-state.downQty)/softImbalance)), 0, 3)
+	if state.upQty > state.downQty {
+		targetBidUp -= skew
+		targetBidDown += skew
+	} else {
+		targetBidUp += skew
+		targetBidDown -= skew
 	}
 
 	limit := PayoutCents - profitFloorCents
-	sum := bidUp + bidDown
+	sum := targetBidUp + targetBidDown
 	if sum > limit {
 		over := sum - limit
-		if net > 0 {
-			bidUp = maxInt(1, bidUp-over)
-		} else if net < 0 {
-			bidDown = maxInt(1, bidDown-over)
+
+		if state.net() > 50 {
+			targetBidUp = maxInt(1, targetBidUp-over)
+		} else if state.net() < -50 {
+			targetBidDown = maxInt(1, targetBidDown-over)
 		} else {
 			sh := (over + 1) / 2
-			bidUp = maxInt(1, bidUp-sh)
-			bidDown = maxInt(1, bidDown-(over-sh))
+			targetBidUp = maxInt(1, targetBidUp-sh)
+			targetBidDown = maxInt(1, targetBidDown-(over-sh))
 		}
 	}
 
-	bidUp = clampInt(bidUp, 0, askUp-1)
-	bidDown = clampInt(bidDown, 0, askDown-1)
+	targetBidUp = clampInt(targetBidUp, 0, askUp-1)
+	targetBidDown = clampInt(targetBidDown, 0, askDown-1)
 
-	return bidUp, bidDown
+	return targetBidUp, targetBidDown
 }
 
-func reconcileOrdersSimple(desired []*DesiredOrder, openOrdersByTag map[string][]*Order) *Plan {
+func reconcileOrders(desired []*DesiredOrder, openOrdersByTag map[string][]*Order) *Plan {
 	desiredByTag := make(map[string]*DesiredOrder, len(desired))
 	for _, d := range desired {
 		desiredByTag[d.tag] = d
@@ -146,7 +119,12 @@ func reconcileOrdersSimple(desired []*DesiredOrder, openOrdersByTag map[string][
 		}
 
 		for _, o := range orders {
-			if o.Price != want.price {
+			if desiredByTag[tag] == nil {
+				cancelByTag[tag] = append(cancelByTag[tag], o.ID)
+				continue
+			}
+
+			if o.Price != want.price || o.Remaining() < want.size {
 				cancelByTag[tag] = append(cancelByTag[tag], o.ID)
 			} else {
 				desiredByTag[tag] = nil
@@ -184,4 +162,40 @@ func buildLadder(side OrderSide, topBid int) []*DesiredOrder {
 		})
 	}
 	return out
+}
+
+func tryProfitableClose(state *State, book *OrderBook, net, absNet float64) *DesiredOrder {
+	if absNet < minQty {
+		return nil
+	}
+
+	var needSide OrderSide
+	var ask int
+	var tag string
+
+	if net < 0 {
+		needSide = SideUp
+		ask = book.up.bestAsk
+		tag = "CLOSE_UP"
+	} else if net > 0 {
+		needSide = SideDown
+		ask = book.down.bestAsk
+		tag = "CLOSE_DOWN"
+	}
+
+	size := math.Min(absNet, 50)
+
+	before := state.pnl()
+	after := state.simulate(needSide, ask, size)
+
+	if after > before {
+		return &DesiredOrder{
+			side:  needSide,
+			price: ask,
+			size:  size,
+			tag:   tag,
+		}
+	}
+
+	return nil
 }
