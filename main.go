@@ -8,6 +8,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+var Mode string
+
 const (
 	LookAhead = 1
 )
@@ -79,6 +81,8 @@ func main() {
 	if market == "" {
 		log.Fatal("MARKET env var is required")
 	}
+
+	Mode = os.Getenv("MODE")
 
 	if _, ok := marketMapping[market]; !ok {
 		log.Fatalf("Invalid market: %s", market)

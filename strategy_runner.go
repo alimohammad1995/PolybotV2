@@ -113,8 +113,10 @@ func (s *Strategy) handle(marketID string) {
 		return
 	}
 
-	//snapshotManager.Tick(fmt.Sprintf("%s", marketInfo.Slug), upBestBidAsk, downBestBidAsk)
-	//return
+	if Mode == "local" {
+		snapshotManager.Tick(fmt.Sprintf("%s", marketInfo.Slug), upBestBidAsk, downBestBidAsk)
+		return
+	}
 
 	upQty, upAvg, _ := GetAssetPosition(upToken)
 	downQty, downAvg, _ := GetAssetPosition(downToken)
