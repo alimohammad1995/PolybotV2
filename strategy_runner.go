@@ -334,7 +334,7 @@ func (s *Strategy) getOpenOrders(marketID string, upToken, downToken string) map
 	out := make(map[OrderSide][]*Order, len(set))
 	for id := range set {
 		o := Orders[id]
-		if o.Remaining() <= eps {
+		if o.Remaining() <= 0.1 {
 			continue
 		}
 
