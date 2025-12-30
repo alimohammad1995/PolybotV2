@@ -2,6 +2,7 @@ package main
 
 import (
 	"Polybot/polymarket"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -140,8 +141,9 @@ func (s *Strategy) handle(marketID string) {
 		},
 	}
 
-	openOrdersByTag := s.getOpenOrdersByTag(marketID)
-	plan := TradingDecision(state, book, timeLeftSec, openOrdersByTag, upToken, downToken)
+	openOrders := s.getOpenOrders(marketID, upToken, downToken)
+	desiredOrders := TradingDecision(state, book, timeLeftSec, openOrders, upToken, downToken)
+	plan := s.reconcileOrders(desiredOrders, openOrders)
 	s.executePlan(marketID, upToken, downToken, plan)
 }
 
@@ -217,20 +219,45 @@ type DesiredOrder struct {
 }
 
 type Plan struct {
-	place       []*DesiredOrder
-	cancelByTag map[string][]string
+	place     []*DesiredOrder
+	cancelIDs []string
+}
+
+func (s *Strategy) reconcileOrders(desired []*DesiredOrder, openOrdersByTag map[OrderSide][]*Order) *Plan {
+	desiresBySidePrice := make(map[string]bool, len(desired))
+	openOrdersBySidePrice := make(map[string]bool, len(openOrdersByTag))
+
+	for _, d := range desired {
+		desiresBySidePrice[fmt.Sprintf("%s_%d", d.side, d.price)] = true
+	}
+
+	for side, orders := range openOrdersByTag {
+		for _, o := range orders {
+			openOrdersBySidePrice[fmt.Sprintf("%s_%d", side, o.Price)] = true
+		}
+	}
+
+	cancelIDs := make([]string, 0, 20)
+	for side, orders := range openOrdersByTag {
+		for _, o := range orders {
+			if !desiresBySidePrice[fmt.Sprintf("%s_%d", side, o.Price)] {
+				cancelIDs = append(cancelIDs, o.ID)
+			}
+		}
+	}
+
+	newDesires := make([]*DesiredOrder, 0, len(desired))
+	for _, d := range desired {
+		if !openOrdersBySidePrice[fmt.Sprintf("%s_%d", d.side, d.price)] {
+			newDesires = append(newDesires, d)
+		}
+	}
+
+	return &Plan{place: newDesires, cancelIDs: cancelIDs}
 }
 
 func (s *Strategy) executePlan(marketID, upToken, downToken string, plan *Plan) {
-	cancelIDs := make([]string, 0, 10)
-
-	for _, ids := range plan.cancelByTag {
-		if len(ids) == 0 {
-			continue
-		}
-		cancelIDs = append(cancelIDs, ids...)
-	}
-	if err := s.executor.CancelOrders(cancelIDs, "canceling"); err != nil {
+	if err := s.executor.CancelOrders(plan.cancelIDs, "canceling"); err != nil {
 		log.Printf("cancel order failed: market=%s err=%v", marketID, err)
 	}
 
@@ -296,21 +323,26 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID []string, price []int, qty []
 	}
 }
 
-func (s *Strategy) getOpenOrdersByTag(marketID string) map[string][]*Order {
+func (s *Strategy) getOpenOrders(marketID string, upToken, downToken string) map[OrderSide][]*Order {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 
 	set := MarketToOrderIDs[marketID]
 	if len(set) == 0 {
-		return map[string][]*Order{}
+		return map[OrderSide][]*Order{}
 	}
-	out := make(map[string][]*Order, len(set))
+	out := make(map[OrderSide][]*Order, len(set))
 	for id := range set {
 		o := Orders[id]
-		if math.Abs(o.OriginalSize-o.MatchedSize) <= eps {
+		if o.Remaining() <= eps {
 			continue
 		}
-		out[o.Tag] = append(out[o.Tag], o)
+
+		if o.AssetID == upToken {
+			out[SideUp] = append(out[SideUp], o)
+		} else if o.AssetID == downToken {
+			out[SideDown] = append(out[SideDown], o)
+		}
 	}
 	return out
 }
