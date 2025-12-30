@@ -11,8 +11,8 @@ const (
 	timeLeftForPositivePNLStop = 3 * 60
 	profitFloorCents           = 4
 
-	deadImbalance = 30
-	softImbalance = 20
+	deadImbalance = 50
+	softImbalance = 30
 
 	ladderStep = 1
 )
