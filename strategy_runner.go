@@ -175,14 +175,14 @@ func (st *State) simulate(side OrderSide, price int, qty float64) float64 {
 
 	switch side {
 	case SideUp:
-		newState.upAvgCents = newState.upQty*newState.upAvgCents + float64(price)*qty
+		newState.upAvgCents = (newState.upQty*newState.upAvgCents + float64(price)*qty) / (newState.upQty + qty)
 		newState.upQty += qty
 	case SideDown:
-		newState.downAvgCents = newState.downQty*newState.downAvgCents + float64(price)*qty
+		newState.downAvgCents = newState.downQty*newState.downAvgCents + float64(price)*qty/(newState.downQty+qty)
 		newState.downQty += qty
 	}
 
-	return st.pnl()
+	return newState.pnl()
 }
 
 func (st *State) clone() *State {
