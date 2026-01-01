@@ -53,7 +53,7 @@ func (e *OrderExecutor) BuyLimits(tokenIDs []string, prices, sizes []float64, or
 		args := &polymarket.OrderArgs{
 			TokenID: tokenID,
 			Price:   prices[i],
-			Size:    sizes[i],
+			Size:    float64(int(sizes[i]*100) / 100),
 			Side:    polymarket.SideBuy,
 		}
 		order, err := e.client.client.CreateOrder(args, nil)
