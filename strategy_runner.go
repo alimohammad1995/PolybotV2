@@ -143,9 +143,9 @@ func (s *Strategy) handle(marketID string) {
 		},
 	}
 
-	openOrders := s.getOpenOrders(marketID, upToken, downToken)
-	desiredOrders := TradingDecision(state, book, timeLeftSec, openOrders, upToken, downToken)
-	plan := s.reconcileOrders(desiredOrders, openOrders)
+	openOrdersBySide, _ := s.getOpenOrders(marketID, upToken, downToken)
+	desiredOrders := TradingDecision(state, book, timeLeftSec, openOrdersBySide, upToken, downToken)
+	plan := s.reconcileOrders(desiredOrders, openOrdersBySide)
 	s.executePlan(marketID, upToken, downToken, plan)
 }
 
@@ -178,7 +178,7 @@ func (st *State) simulate(side OrderSide, price int, qty float64) float64 {
 		newState.upAvgCents = (newState.upQty*newState.upAvgCents + float64(price)*qty) / (newState.upQty + qty)
 		newState.upQty += qty
 	case SideDown:
-		newState.downAvgCents = newState.downQty*newState.downAvgCents + float64(price)*qty/(newState.downQty+qty)
+		newState.downAvgCents = (newState.downQty*newState.downAvgCents + float64(price)*qty) / (newState.downQty + qty)
 		newState.downQty += qty
 	}
 
@@ -325,15 +325,16 @@ func (s *Strategy) placeLimitBuy(marketID, tokenID []string, price []int, qty []
 	}
 }
 
-func (s *Strategy) getOpenOrders(marketID string, upToken, downToken string) map[OrderSide][]*Order {
+func (s *Strategy) getOpenOrders(marketID string, upToken, downToken string) (map[OrderSide][]*Order, map[string][]*Order) {
 	ordersMu.RLock()
 	defer ordersMu.RUnlock()
 
 	set := MarketToOrderIDs[marketID]
 	if len(set) == 0 {
-		return map[OrderSide][]*Order{}
+		return nil, nil
 	}
-	out := make(map[OrderSide][]*Order, len(set))
+	outBySide := make(map[OrderSide][]*Order, len(set))
+	outByTag := make(map[string][]*Order, len(set))
 	for id := range set {
 		o := Orders[id]
 		if o.Remaining() <= 0.1 {
@@ -341,12 +342,14 @@ func (s *Strategy) getOpenOrders(marketID string, upToken, downToken string) map
 		}
 
 		if o.AssetID == upToken {
-			out[SideUp] = append(out[SideUp], o)
+			outBySide[SideUp] = append(outBySide[SideUp], o)
 		} else if o.AssetID == downToken {
-			out[SideDown] = append(out[SideDown], o)
+			outBySide[SideDown] = append(outBySide[SideDown], o)
 		}
+
+		outByTag[o.Tag] = append(outByTag[o.Tag], o)
 	}
-	return out
+	return outBySide, outByTag
 }
 
 func normalizeOrderSize(size float64) float64 {
