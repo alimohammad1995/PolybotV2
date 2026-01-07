@@ -9,7 +9,7 @@ const (
 	minQty = 5
 
 	timeLeftForPositivePNLStop = 3 * 60
-	profitFloorCents           = 4
+	profitFloorCents           = 2
 
 	deadImbalance = 20
 	softImbalance = 40
