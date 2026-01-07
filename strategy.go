@@ -124,19 +124,23 @@ func tryProfitableClose(state *State, book *OrderBook, net, absNet float64) *Des
 
 	var needSide OrderSide
 	var ask int
+	var availableSize float64
 	var tag string
 
 	if net < 0 {
 		needSide = SideUp
 		ask = book.up.bestAsk
+		availableSize = book.up.bestAskSize
 		tag = "CLOSE_UP"
 	} else if net > 0 {
 		needSide = SideDown
 		ask = book.down.bestAsk
+		availableSize = book.down.bestAskSize
 		tag = "CLOSE_DOWN"
 	}
 
 	size := math.Min(absNet, 50)
+	size = math.Min(availableSize, size)
 
 	before := state.pnl()
 	after := state.simulate(needSide, ask, size)
