@@ -22,7 +22,6 @@ type Config struct {
 	MaxQuoteAge             time.Duration `yaml:"max_quote_age"`
 	MaxReferenceAge         time.Duration `yaml:"max_reference_age"`
 	BankrollUSD             float64       `yaml:"bankroll_usd"`
-	WorkerCount             int           `yaml:"worker_count"`
 
 	// Polymarket
 	PrivateKey    string
@@ -62,7 +61,6 @@ func Load() (*Config, error) {
 		MaxQuoteAge:             30 * time.Second,
 		MaxReferenceAge:         10 * time.Second,
 		BankrollUSD:             100.0,
-		WorkerCount:             8,
 		Market:                  "btc",
 		Interval:                5,
 		Mode:                    "paper",

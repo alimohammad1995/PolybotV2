@@ -24,7 +24,6 @@ type App struct {
 
 type AppConfig struct {
 	BankrollUSD float64
-	WorkerCount int
 	Asset       string // single asset (BTC, ETH, etc.)
 	Mode        string
 }
@@ -34,7 +33,6 @@ func (a *App) Run(ctx context.Context) error {
 		"mode", a.Config.Mode,
 		"asset", a.Config.Asset,
 		"bankroll", a.Config.BankrollUSD,
-		"workers", a.Config.WorkerCount,
 	)
 
 	repriceCh := make(chan domain.RepriceEvent, 1024)
@@ -48,15 +46,12 @@ func (a *App) Run(ctx context.Context) error {
 	// Stream Polymarket quotes via WebSocket
 	go a.streamPolymarketQuotes(ctx, repriceCh)
 
-	// Worker pool for repricing
-	for i := 0; i < a.Config.WorkerCount; i++ {
-		go a.repriceWorker(ctx, repriceCh)
-	}
-
 	// Periodic reprice ticker (catch time decay)
 	go a.timeDecayTicker(ctx, repriceCh)
 
-	<-ctx.Done()
+	// Single reprice loop — one market, one asset, CPU-bound evaluation
+	a.repriceLoop(ctx, repriceCh)
+
 	a.Logger.Info("shutting down")
 	return nil
 }
@@ -126,7 +121,7 @@ func (a *App) waitForExpiry(ctx context.Context, market domain.BinaryMarket) {
 
 // streamPolymarketQuotes subscribes to the Polymarket WebSocket and feeds quotes into repriceCh.
 func (a *App) streamPolymarketQuotes(ctx context.Context, repriceCh chan<- domain.RepriceEvent) {
-	quoteCh, err := a.MarketData.SubscribeQuotes(ctx, nil)
+	quoteCh, err := a.MarketData.SubscribeQuotes(ctx)
 	if err != nil {
 		a.Logger.Error("failed to subscribe to polymarket quotes", "error", err)
 		return
@@ -201,7 +196,7 @@ func (a *App) timeDecayTicker(ctx context.Context, repriceCh chan<- domain.Repri
 	}
 }
 
-func (a *App) repriceWorker(ctx context.Context, repriceCh <-chan domain.RepriceEvent) {
+func (a *App) repriceLoop(ctx context.Context, repriceCh <-chan domain.RepriceEvent) {
 	for {
 		select {
 		case <-ctx.Done():

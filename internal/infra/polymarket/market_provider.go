@@ -136,7 +136,7 @@ func (p *MarketProvider) fetchQuoteREST(marketID domain.MarketID) (domain.Market
 }
 
 // SubscribeQuotes connects to the Polymarket WebSocket and streams live order book updates.
-func (p *MarketProvider) SubscribeQuotes(ctx context.Context, _ []domain.MarketID) (<-chan domain.MarketQuote, error) {
+func (p *MarketProvider) SubscribeQuotes(ctx context.Context) (<-chan domain.MarketQuote, error) {
 	ch := make(chan domain.MarketQuote, 64)
 
 	go func() {
@@ -148,12 +148,14 @@ func (p *MarketProvider) SubscribeQuotes(ctx context.Context, _ []domain.MarketI
 }
 
 func (p *MarketProvider) runWSLoop(ctx context.Context, ch chan<- domain.MarketQuote) {
+	p.logger.Info("ws: starting polymarket quote loop", "asset", p.asset, "interval", p.interval)
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
 		slug := p.CurrentSlug()
+		p.logger.Info("ws: resolving market", "slug", slug, "url", fmt.Sprintf("https://polymarket.com/event/%s", slug))
 		summary, err := p.gamma.GetMarketBySlug(slug)
 		if err != nil {
 			p.logger.Warn("ws: waiting for market", "slug", slug, "error", err)
@@ -297,7 +299,7 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 				}
 				p.mu.RUnlock()
 
-				p.logger.Debug("ws: quote update",
+				p.logger.Info("ws: quote update",
 					"up_bid", quote.Up.Bid,
 					"up_ask", quote.Up.Ask,
 					"down_bid", quote.Down.Bid,

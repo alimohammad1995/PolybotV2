@@ -68,7 +68,6 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	return &app.App{
 		Config: &app.AppConfig{
 			BankrollUSD: cfg.BankrollUSD,
-			WorkerCount: cfg.WorkerCount,
 			Asset:       asset,
 			Mode:        cfg.Mode,
 		},

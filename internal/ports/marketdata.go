@@ -9,7 +9,7 @@ import (
 type MarketDataProvider interface {
 	GetActiveMarkets(ctx context.Context) ([]domain.BinaryMarket, error)
 	GetQuote(ctx context.Context, marketID domain.MarketID) (domain.MarketQuote, error)
-	SubscribeQuotes(ctx context.Context, marketIDs []domain.MarketID) (<-chan domain.MarketQuote, error)
+	SubscribeQuotes(ctx context.Context) (<-chan domain.MarketQuote, error)
 }
 
 type ReferencePriceProvider interface {

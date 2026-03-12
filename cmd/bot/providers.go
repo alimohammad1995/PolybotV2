@@ -47,7 +47,7 @@ func (s *stubMarketDataProvider) GetQuote(_ context.Context, _ domain.MarketID) 
 	return domain.MarketQuote{}, nil
 }
 
-func (s *stubMarketDataProvider) SubscribeQuotes(_ context.Context, _ []domain.MarketID) (<-chan domain.MarketQuote, error) {
+func (s *stubMarketDataProvider) SubscribeQuotes(_ context.Context) (<-chan domain.MarketQuote, error) {
 	ch := make(chan domain.MarketQuote)
 	return ch, nil
 }
