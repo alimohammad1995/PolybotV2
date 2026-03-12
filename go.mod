@@ -5,6 +5,8 @@ go 1.25
 require (
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/gorilla/websocket v1.5.3
+	github.com/joho/godotenv v1.5.1
+	github.com/smartcontractkit/data-streams-sdk/go v1.2.4
 )
 
 require (
@@ -17,9 +19,9 @@ require (
 	github.com/ethereum/c-kzg-4844/v2 v2.1.5 // indirect
 	github.com/ethereum/go-verkle v0.2.2 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
+	nhooyr.io/websocket v1.8.11 // indirect
 )
