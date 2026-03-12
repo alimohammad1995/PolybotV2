@@ -1,0 +1,286 @@
+package strategy
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"Polybot/internal/domain"
+	"Polybot/internal/ports"
+	"Polybot/internal/service"
+)
+
+// FreshnessConfig defines staleness thresholds for data sources.
+type FreshnessConfig struct {
+	MaxReferenceAge  time.Duration
+	MaxQuoteAge      time.Duration
+	MaxAllowedSpread float64
+}
+
+type StrategyRunner struct {
+	PricingModel service.PricingModel
+	SignalSvc    *service.SignalService
+	RiskSvc      *service.RiskService
+	ExecSvc      *service.ExecutionService
+	PositionSvc  *service.PositionService
+	EventRepo    ports.EventRepository
+	Clock        ports.Clock
+	Freshness    FreshnessConfig
+	Logger       *slog.Logger
+}
+
+func NewStrategyRunner(
+	pricing service.PricingModel,
+	signal *service.SignalService,
+	risk *service.RiskService,
+	exec *service.ExecutionService,
+	position *service.PositionService,
+	eventRepo ports.EventRepository,
+	clock ports.Clock,
+	freshness FreshnessConfig,
+	logger *slog.Logger,
+) *StrategyRunner {
+	return &StrategyRunner{
+		PricingModel: pricing,
+		SignalSvc:    signal,
+		RiskSvc:      risk,
+		ExecSvc:      exec,
+		PositionSvc:  position,
+		EventRepo:    eventRepo,
+		Clock:        clock,
+		Freshness:    freshness,
+		Logger:       logger,
+	}
+}
+
+// EvaluateMarket runs the full pricing->signal->risk->execution pipeline.
+//
+// refState comes from Chainlink (truth process).
+// mktState comes from Polymarket (execution venue).
+// These are NEVER mixed -- fair probability uses only Chainlink data.
+func (r *StrategyRunner) EvaluateMarket(
+	ctx context.Context,
+	market *domain.BinaryMarket,
+	refState *domain.ReferenceState,
+	mktState *domain.MarketState,
+	bankrollUSD float64,
+) error {
+	now := r.Clock.Now()
+
+	// === SAFETY GUARD: freshness checks ===
+	if reason := r.checkFreshness(now, refState, mktState); reason != "" {
+		r.Logger.Debug("skipping stale market",
+			"market", market.ID,
+			"reason", reason,
+		)
+		return nil
+	}
+
+	// === SAFETY GUARD: spread check ===
+	if mktState.Spread > r.Freshness.MaxAllowedSpread {
+		r.Logger.Debug("spread too wide",
+			"market", market.ID,
+			"spread", mktState.Spread,
+			"max", r.Freshness.MaxAllowedSpread,
+		)
+		return nil
+	}
+
+	// === SAFETY GUARD: quote sanity ===
+	if err := r.validateQuotes(mktState); err != nil {
+		r.Logger.Warn("quote sanity check failed",
+			"market", market.ID,
+			"error", err,
+		)
+		return nil
+	}
+
+	// === SAFETY GUARD: jump rejection ===
+	if refState.JumpScore > 6.0 {
+		r.Logger.Info("rejecting due to extreme jump",
+			"market", market.ID,
+			"jump_score", refState.JumpScore,
+		)
+		return nil
+	}
+
+	remaining := market.SettlementTime.Sub(now).Seconds()
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	// === PRICING: uses ONLY Chainlink-derived data ===
+	pricingInput := domain.PricingInput{
+		CurrentPrice:     refState.CurrentPrice,
+		PriceToBeat:      market.PriceToBeat,
+		RemainingSeconds: remaining,
+		RealizedVol1m:    refState.RealizedVol1m,
+		RealizedVol5m:    refState.RealizedVol5m,
+		JumpScore:        refState.JumpScore,
+		Regime:           refState.Regime,
+	}
+
+	fv, err := r.PricingModel.FairProbUp(ctx, pricingInput)
+	if err != nil {
+		return fmt.Errorf("pricing: %w", err)
+	}
+	fv.MarketID = market.ID
+
+	_ = r.EventRepo.SaveFairValue(ctx, fv)
+
+	// Convert MarketState to MarketQuote for signal service
+	quote := domain.MarketQuote{
+		MarketID:  market.ID,
+		Up:        domain.SideQuote{Bid: mktState.UpBid, Ask: mktState.UpAsk},
+		Down:      domain.SideQuote{Bid: mktState.DownBid, Ask: mktState.DownAsk},
+		Timestamp: mktState.Timestamp,
+	}
+	_ = r.EventRepo.SaveQuote(ctx, quote)
+
+	// === SIGNAL: compare Chainlink fair value against Polymarket asks ===
+	inventoryPenalty := r.PositionSvc.GetInventoryPenalty(market.ID)
+
+	signal, err := r.SignalSvc.Generate(ctx, &fv, &quote, inventoryPenalty)
+	if err != nil {
+		return fmt.Errorf("signal: %w", err)
+	}
+	_ = r.EventRepo.SaveSignal(ctx, signal)
+
+	r.Logger.Info("evaluated",
+		"market", market.ID,
+		"asset", market.Asset,
+		"ref", refState.CurrentPrice,
+		"beat", market.PriceToBeat,
+		"remaining", remaining,
+		"regime", refState.Regime,
+		"vol1m", refState.RealizedVol1m,
+		"prob", fv.ProbUp,
+		"lower", fv.ProbUpLower,
+		"upper", fv.ProbUpUpper,
+		"up_ask", mktState.UpAsk,
+		"down_ask", mktState.DownAsk,
+		"edge_up", signal.EdgeBuyUp,
+		"edge_down", signal.EdgeBuyDown,
+		"signal", signal.Side,
+	)
+
+	if signal.Side == domain.SignalNone {
+		return nil
+	}
+	if !r.RiskSvc.ShouldAllowNewTrade(remaining) {
+		r.Logger.Info("blocked by cutoff", "market", market.ID, "remaining", remaining)
+		return nil
+	}
+
+	currentExposure := r.PositionSvc.GetExposureForMarket(market.ID)
+
+	var edge float64
+	var maxPrice float64
+	switch signal.Side {
+	case domain.SignalBuyUp:
+		edge = signal.EdgeBuyUp
+		maxPrice = mktState.UpAsk
+	case domain.SignalBuyDown:
+		edge = signal.EdgeBuyDown
+		maxPrice = mktState.DownAsk
+	default:
+		return nil
+	}
+
+	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure)
+	if sizeUSD <= 0 {
+		return nil
+	}
+
+	r.Logger.Info("executing",
+		"market", market.ID,
+		"side", signal.Side,
+		"max_price", maxPrice,
+		"size_usd", sizeUSD,
+		"edge", edge,
+		"regime", refState.Regime,
+	)
+
+	err = r.ExecSvc.Execute(ctx, domain.ExecutionRequest{
+		MarketID: market.ID,
+		Side:     signal.Side,
+		MaxPrice: maxPrice,
+		SizeUSD:  sizeUSD,
+		Reason:   signal.Reason,
+	})
+	if err != nil {
+		return fmt.Errorf("execution: %w", err)
+	}
+
+	side := domain.PositionUp
+	if signal.Side == domain.SignalBuyDown {
+		side = domain.PositionDown
+	}
+	return r.PositionSvc.RecordPosition(ctx, domain.Position{
+		MarketID:         market.ID,
+		Side:             side,
+		AvgEntryPrice:    maxPrice,
+		Quantity:         sizeUSD / maxPrice,
+		NotionalUSD:      sizeUSD,
+		OpenedAt:         time.Now(),
+		HoldToSettlement: true,
+	})
+}
+
+// OnMarketUpdate is a backward-compatible wrapper that constructs
+// ReferenceState and MarketState from simple arguments.
+func (r *StrategyRunner) OnMarketUpdate(
+	ctx context.Context,
+	market domain.BinaryMarket,
+	quote domain.MarketQuote,
+	refPrice float64,
+	bankrollUSD float64,
+) error {
+	refState := domain.ReferenceState{
+		Asset:        market.Asset,
+		CurrentPrice: refPrice,
+		LastUpdate:   r.Clock.Now(),
+	}
+	mktState := domain.MarketState{
+		MarketID:    market.ID,
+		PriceToBeat: market.PriceToBeat,
+		UpBid:       quote.Up.Bid,
+		UpAsk:       quote.Up.Ask,
+		DownBid:     quote.Down.Bid,
+		DownAsk:     quote.Down.Ask,
+		Spread:      (quote.Up.Ask - quote.Up.Bid + quote.Down.Ask - quote.Down.Bid) / 2.0,
+		Timestamp:   quote.Timestamp,
+	}
+	return r.EvaluateMarket(ctx, &market, &refState, &mktState, bankrollUSD)
+}
+
+func (r *StrategyRunner) checkFreshness(now time.Time, ref *domain.ReferenceState, mkt *domain.MarketState) string {
+	if r.Freshness.MaxReferenceAge > 0 && !ref.LastUpdate.IsZero() {
+		if now.Sub(ref.LastUpdate) > r.Freshness.MaxReferenceAge {
+			return "stale_chainlink"
+		}
+	}
+	if r.Freshness.MaxQuoteAge > 0 && !mkt.Timestamp.IsZero() {
+		if now.Sub(mkt.Timestamp) > r.Freshness.MaxQuoteAge {
+			return "stale_polymarket_quote"
+		}
+	}
+	return ""
+}
+
+func (r *StrategyRunner) validateQuotes(mkt *domain.MarketState) error {
+	if mkt.UpAsk <= 0 || mkt.UpAsk > 1.0 {
+		return fmt.Errorf("invalid up ask: %f", mkt.UpAsk)
+	}
+	if mkt.DownAsk <= 0 || mkt.DownAsk > 1.0 {
+		return fmt.Errorf("invalid down ask: %f", mkt.DownAsk)
+	}
+	if mkt.UpBid < 0 || mkt.UpBid >= mkt.UpAsk {
+		return fmt.Errorf("invalid up bid/ask: bid=%f ask=%f", mkt.UpBid, mkt.UpAsk)
+	}
+	if mkt.DownBid < 0 || mkt.DownBid >= mkt.DownAsk {
+		return fmt.Errorf("invalid down bid/ask: bid=%f ask=%f", mkt.DownBid, mkt.DownAsk)
+	}
+	return nil
+}

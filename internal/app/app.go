@@ -1,0 +1,250 @@
+package app
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"Polybot/internal/domain"
+	"Polybot/internal/ports"
+	"Polybot/internal/service"
+	"Polybot/internal/strategy"
+)
+
+type App struct {
+	Config         *AppConfig
+	Registry       *service.MarketRegistry
+	RefAnalytics   *service.ReferenceAnalyticsService
+	PositionSvc    *service.PositionService
+	Runner         *strategy.StrategyRunner
+	MarketData     ports.MarketDataProvider
+	RefPriceStream ports.ReferencePriceProvider
+	Logger         *slog.Logger
+}
+
+type AppConfig struct {
+	BankrollUSD float64
+	WorkerCount int
+	Asset       string // single asset (BTC, ETH, etc.)
+	Mode        string
+}
+
+func (a *App) Run(ctx context.Context) error {
+	a.Logger.Info("starting polybot",
+		"mode", a.Config.Mode,
+		"asset", a.Config.Asset,
+		"bankroll", a.Config.BankrollUSD,
+		"workers", a.Config.WorkerCount,
+	)
+
+	repriceCh := make(chan domain.RepriceEvent, 1024)
+
+	// Stream Chainlink reference prices for our asset
+	go a.streamChainlinkTicks(ctx, a.Config.Asset, repriceCh)
+
+	// Market lifecycle: resolve market, stream quotes via WS, roll on expiry
+	go a.marketLifecycle(ctx, repriceCh)
+
+	// Stream Polymarket quotes via WebSocket
+	go a.streamPolymarketQuotes(ctx, repriceCh)
+
+	// Worker pool for repricing
+	for i := 0; i < a.Config.WorkerCount; i++ {
+		go a.repriceWorker(ctx, repriceCh)
+	}
+
+	// Periodic reprice ticker (catch time decay)
+	go a.timeDecayTicker(ctx, repriceCh)
+
+	<-ctx.Done()
+	a.Logger.Info("shutting down")
+	return nil
+}
+
+// marketLifecycle resolves the current market, polls quotes, and rolls to the next
+// market when the current one expires.
+func (a *App) marketLifecycle(ctx context.Context, repriceCh chan<- domain.RepriceEvent) {
+	for {
+		// Resolve current market
+		markets, err := a.MarketData.GetActiveMarkets(ctx)
+		if err != nil || len(markets) == 0 {
+			a.Logger.Warn("waiting for market to become available", "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+				continue
+			}
+		}
+
+		market := markets[0]
+
+		// Set PriceToBeat from Chainlink reference price at market start
+		if refState, ok := a.RefAnalytics.GetState(market.Asset); ok && refState.CurrentPrice > 0 {
+			market.PriceToBeat = refState.CurrentPrice
+			a.Logger.Info("price to beat set from chainlink",
+				"asset", market.Asset,
+				"price_to_beat", refState.CurrentPrice,
+			)
+		} else {
+			a.Logger.Warn("no chainlink reference price yet, PriceToBeat=0", "asset", market.Asset)
+		}
+
+		a.Registry.SetMarket(market)
+		a.Logger.Info("active market",
+			"id", market.ID,
+			"slug", market.Slug,
+			"asset", market.Asset,
+			"price_to_beat", market.PriceToBeat,
+			"end_time", market.EndTime.Format(time.RFC3339),
+			"up_token", market.UpTokenID,
+			"down_token", market.DownTokenID,
+		)
+
+		// Wait until market expires or context is cancelled
+		a.waitForExpiry(ctx, market)
+
+		// Clean up expired market
+		a.Registry.RemoveMarket(market.ID)
+		a.Logger.Info("market expired, rolling to next", "expired_slug", market.Slug)
+	}
+}
+
+func (a *App) waitForExpiry(ctx context.Context, market domain.BinaryMarket) {
+	remaining := time.Until(market.EndTime)
+	if remaining <= 0 {
+		return
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// streamPolymarketQuotes subscribes to the Polymarket WebSocket and feeds quotes into repriceCh.
+func (a *App) streamPolymarketQuotes(ctx context.Context, repriceCh chan<- domain.RepriceEvent) {
+	quoteCh, err := a.MarketData.SubscribeQuotes(ctx, nil)
+	if err != nil {
+		a.Logger.Error("failed to subscribe to polymarket quotes", "error", err)
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case quote, ok := <-quoteCh:
+			if !ok {
+				return
+			}
+			a.Registry.SetQuote(quote)
+			select {
+			case repriceCh <- domain.RepriceEvent{MarketID: quote.MarketID, Reason: "polymarket_ws"}:
+			default:
+			}
+		}
+	}
+}
+
+// streamChainlinkTicks processes Chainlink price feed for our asset.
+func (a *App) streamChainlinkTicks(ctx context.Context, asset string, repriceCh chan<- domain.RepriceEvent) {
+	ch, err := a.RefPriceStream.SubscribePrices(ctx, asset)
+	if err != nil {
+		a.Logger.Error("failed to subscribe to chainlink", "asset", asset, "error", err)
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case snap, ok := <-ch:
+			if !ok {
+				return
+			}
+
+			a.RefAnalytics.OnTick(domain.ChainlinkTick{
+				Asset:     snap.Asset,
+				Price:     snap.Price,
+				Timestamp: snap.Timestamp,
+			})
+
+			for _, marketID := range a.Registry.ListMarketIDsForAsset(asset) {
+				select {
+				case repriceCh <- domain.RepriceEvent{MarketID: marketID, Reason: "chainlink_tick"}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (a *App) timeDecayTicker(ctx context.Context, repriceCh chan<- domain.RepriceEvent) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, m := range a.Registry.ListMarkets() {
+				select {
+				case repriceCh <- domain.RepriceEvent{MarketID: m.ID, Reason: "time_decay"}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (a *App) repriceWorker(ctx context.Context, repriceCh <-chan domain.RepriceEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-repriceCh:
+			if !ok {
+				return
+			}
+
+			market, ok := a.Registry.GetMarket(evt.MarketID)
+			if !ok {
+				continue
+			}
+
+			refState, ok := a.RefAnalytics.GetState(market.Asset)
+			if !ok {
+				continue
+			}
+
+			quote, ok := a.Registry.GetQuote(evt.MarketID)
+			if !ok {
+				continue
+			}
+
+			mktState := domain.MarketState{
+				MarketID:    market.ID,
+				PriceToBeat: market.PriceToBeat,
+				UpBid:       quote.Up.Bid,
+				UpAsk:       quote.Up.Ask,
+				DownBid:     quote.Down.Bid,
+				DownAsk:     quote.Down.Ask,
+				Spread:      (quote.Up.Ask - quote.Up.Bid + quote.Down.Ask - quote.Down.Bid) / 2.0,
+				Timestamp:   quote.Timestamp,
+			}
+
+			err := a.Runner.EvaluateMarket(ctx, &market, &refState, &mktState, a.Config.BankrollUSD)
+			if err != nil {
+				a.Logger.Error("evaluation error",
+					"market", evt.MarketID,
+					"reason", evt.Reason,
+					"error", err,
+				)
+			}
+		}
+	}
+}
