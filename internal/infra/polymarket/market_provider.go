@@ -38,10 +38,11 @@ func NewMarketProvider(clob *ClobClient, asset string, interval int, logger *slo
 }
 
 // CurrentSlug returns the slug for the currently active market window.
+// Polymarket slugs use the window start timestamp (aligned to interval boundary).
 func (p *MarketProvider) CurrentSlug() string {
 	intervalSecs := int64(p.interval * 60)
 	now := time.Now().Unix()
-	ts := now - now%intervalSecs + intervalSecs
+	ts := now - now%intervalSecs
 	return fmt.Sprintf("%s-updown-%dm-%d", p.asset, p.interval, ts)
 }
 
@@ -49,7 +50,7 @@ func (p *MarketProvider) CurrentSlug() string {
 func (p *MarketProvider) NextSlug() string {
 	intervalSecs := int64(p.interval * 60)
 	now := time.Now().Unix()
-	ts := now - now%intervalSecs + 2*intervalSecs
+	ts := now - now%intervalSecs + intervalSecs
 	return fmt.Sprintf("%s-updown-%dm-%d", p.asset, p.interval, ts)
 }
 
@@ -174,10 +175,11 @@ func (p *MarketProvider) runWSLoop(ctx context.Context, ch chan<- domain.MarketQ
 		// Seed the books with a REST fetch first
 		p.seedBooks(upTokenID, downTokenID)
 
-		p.logger.Info("ws: connecting to polymarket orderbook",
+		p.logger.Info("ws: subscribing to market",
 			"slug", slug,
-			"up_token", upTokenID,
-			"down_token", downTokenID,
+			"market_id", summary.MarketID,
+			"end_time", time.Unix(summary.EndDateTS, 0).Format(time.RFC3339),
+			"seconds_to_end", summary.ToEnd(),
 		)
 
 		// Connect WebSocket and stream until error or market expires
