@@ -13,14 +13,14 @@ const (
 )
 
 type BinaryMarket struct {
-	ID             MarketID
-	Slug           string
-	Asset          string
-	StartTime      time.Time
-	EndTime        time.Time
-	SettlementTime time.Time
-	PriceToBeat    float64
-	Status         MarketStatus
-	UpTokenID      string
-	DownTokenID    string
+	ID        MarketID
+	Slug      string
+	Asset     string
+	StartTime time.Time
+	EndTime   time.Time
+
+	PriceToBeat float64
+	Status      MarketStatus
+	UpTokenID   string
+	DownTokenID string
 }

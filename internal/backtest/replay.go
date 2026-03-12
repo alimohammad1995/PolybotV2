@@ -51,11 +51,11 @@ func (rd *ReplayData) ToSnapshots() ([]MarketSnapshot, []SettlementRecord) {
 		snaps = append(snaps, MarketSnapshot{
 			Timestamp: p.Timestamp,
 			Market: domain.BinaryMarket{
-				ID:             domain.MarketID(p.MarketID),
-				Asset:          p.Asset,
-				PriceToBeat:    p.PriceToBeat,
-				SettlementTime: p.SettlementAt,
-				Status:         domain.MarketStatusActive,
+				ID:          domain.MarketID(p.MarketID),
+				Asset:       p.Asset,
+				PriceToBeat: p.PriceToBeat,
+				EndTime:     p.SettlementAt,
+				Status:      domain.MarketStatusActive,
 			},
 			Quote: domain.MarketQuote{
 				MarketID:  domain.MarketID(p.MarketID),

@@ -113,7 +113,7 @@ func TestStrategyRunner_EvaluateMarket_SafetyGuards(t *testing.T) {
 		}
 
 		err := runner.EvaluateMarket(ctx,
-			&domain.BinaryMarket{ID: "m1", SettlementTime: time.Now().Add(5 * time.Minute)},
+			&domain.BinaryMarket{ID: "m1", EndTime: time.Now().Add(5 * time.Minute)},
 			&domain.ReferenceState{CurrentPrice: 100, LastUpdate: time.Now()},
 			&domain.MarketState{
 				UpBid: 0.30, UpAsk: 0.55, DownBid: 0.30, DownAsk: 0.55,
@@ -138,7 +138,7 @@ func TestStrategyRunner_EvaluateMarket_SafetyGuards(t *testing.T) {
 		}
 
 		err := runner.EvaluateMarket(ctx,
-			&domain.BinaryMarket{ID: "m1", SettlementTime: time.Now().Add(5 * time.Minute)},
+			&domain.BinaryMarket{ID: "m1", EndTime: time.Now().Add(5 * time.Minute)},
 			&domain.ReferenceState{
 				CurrentPrice: 100,
 				JumpScore:    8.0,

@@ -121,6 +121,11 @@ func (s *Stream) GetLatestPrice(_ context.Context, asset string) (domain.Referen
 	return snap, nil
 }
 
+// GetPriceAtTime fetches the Chainlink price for an asset at a specific timestamp via REST.
+func (s *Stream) GetPriceAtTime(ctx context.Context, asset string, ts time.Time) (domain.ReferenceSnapshot, error) {
+	return s.FetchReportAtTimestamp(ctx, asset, ts)
+}
+
 // SubscribePrices connects to the Chainlink WebSocket stream for one asset.
 func (s *Stream) SubscribePrices(ctx context.Context, asset string) (<-chan domain.ReferenceSnapshot, error) {
 	s.mu.RLock()
@@ -179,6 +184,30 @@ func (s *Stream) SubscribePrices(ctx context.Context, asset string) (<-chan doma
 	}()
 
 	return ch, nil
+}
+
+// FetchReportAtTimestamp fetches the price for an asset at a specific timestamp.
+func (s *Stream) FetchReportAtTimestamp(ctx context.Context, asset string, ts time.Time) (domain.ReferenceSnapshot, error) {
+	s.mu.RLock()
+	feedID, ok := s.feeds[asset]
+	s.mu.RUnlock()
+
+	if !ok {
+		return domain.ReferenceSnapshot{}, fmt.Errorf("no feed registered for asset %s", asset)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	reports, err := s.client.GetReports(ctx, []feed.ID{feedID}, uint64(ts.Unix()))
+	if err != nil {
+		return domain.ReferenceSnapshot{}, fmt.Errorf("get report at %v: %w", ts, err)
+	}
+	if len(reports) == 0 {
+		return domain.ReferenceSnapshot{}, fmt.Errorf("no report at %v for %s", ts, asset)
+	}
+
+	return s.reportToSnapshot(asset, reports[0])
 }
 
 // FetchLatestReport does a one-shot REST fetch of the latest price for an asset.

@@ -105,7 +105,7 @@ func (r *StrategyRunner) EvaluateMarket(
 		return nil
 	}
 
-	remaining := market.SettlementTime.Sub(now).Seconds()
+	remaining := market.EndTime.Sub(now).Seconds()
 	if remaining < 0 {
 		remaining = 0
 	}

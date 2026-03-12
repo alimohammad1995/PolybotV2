@@ -74,15 +74,22 @@ func (a *App) marketLifecycle(ctx context.Context, repriceCh chan<- domain.Repri
 
 		market := markets[0]
 
-		// Set PriceToBeat from Chainlink reference price at market start
-		if refState, ok := a.RefAnalytics.GetState(market.Asset); ok && refState.CurrentPrice > 0 {
-			market.PriceToBeat = refState.CurrentPrice
+		// Set PriceToBeat from Chainlink at market start time
+		snap, err := a.RefPriceStream.GetPriceAtTime(ctx, market.Asset, market.StartTime)
+		if err != nil {
+			a.Logger.Warn("failed to fetch price at market start, using current",
+				"asset", market.Asset, "start_time", market.StartTime, "error", err)
+			// Fallback: use current price from analytics
+			if refState, ok := a.RefAnalytics.GetState(market.Asset); ok && refState.CurrentPrice > 0 {
+				market.PriceToBeat = refState.CurrentPrice
+			}
+		} else {
+			market.PriceToBeat = snap.Price
 			a.Logger.Info("price to beat set from chainlink",
 				"asset", market.Asset,
-				"price_to_beat", refState.CurrentPrice,
+				"start_time", market.StartTime.Format(time.RFC3339),
+				"price_to_beat", snap.Price,
 			)
-		} else {
-			a.Logger.Warn("no chainlink reference price yet, PriceToBeat=0", "asset", market.Asset)
 		}
 
 		a.Registry.SetMarket(market)
@@ -214,6 +221,16 @@ func (a *App) repriceLoop(ctx context.Context, repriceCh <-chan domain.RepriceEv
 			refState, ok := a.RefAnalytics.GetState(market.Asset)
 			if !ok {
 				continue
+			}
+
+			// Late-bind PriceToBeat if it wasn't available at market creation
+			if market.PriceToBeat == 0 && refState.CurrentPrice > 0 {
+				market.PriceToBeat = refState.CurrentPrice
+				a.Registry.SetMarket(market)
+				a.Logger.Info("price to beat set (late bind)",
+					"asset", market.Asset,
+					"price_to_beat", refState.CurrentPrice,
+				)
 			}
 
 			quote, ok := a.Registry.GetQuote(evt.MarketID)

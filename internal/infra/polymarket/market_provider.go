@@ -65,12 +65,13 @@ func (p *MarketProvider) resolveMarket(slug string) (domain.BinaryMarket, error)
 		return domain.BinaryMarket{}, fmt.Errorf("resolve %s: %w", slug, err)
 	}
 
+	endTime := time.Unix(summary.EndDateTS, 0)
 	return domain.BinaryMarket{
 		ID:          domain.MarketID(summary.MarketID),
 		Slug:        slug,
 		Asset:       strings.ToUpper(p.asset),
 		StartTime:   time.Unix(summary.StartDateTS, 0),
-		EndTime:     time.Unix(summary.EndDateTS, 0),
+		EndTime:     endTime,
 		PriceToBeat: 0,
 		Status:      domain.MarketStatusActive,
 		UpTokenID:   summary.ClobTokenIDs[0],
@@ -260,6 +261,8 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 	}
 	p.logger.Info("ws: subscribed to token IDs", "up", upTokenID[:20]+"...", "down", downTokenID[:20]+"...")
 
+	var lastUp, lastDown domain.SideQuote
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -301,12 +304,16 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 				}
 				p.mu.RUnlock()
 
-				p.logger.Info("ws: quote update",
-					"up_bid", quote.Up.Bid,
-					"up_ask", quote.Up.Ask,
-					"down_bid", quote.Down.Bid,
-					"down_ask", quote.Down.Ask,
-				)
+				if quote.Up != lastUp || quote.Down != lastDown {
+					p.logger.Info("ws: price change",
+						"up_bid", quote.Up.Bid,
+						"up_ask", quote.Up.Ask,
+						"down_bid", quote.Down.Bid,
+						"down_ask", quote.Down.Ask,
+					)
+					lastUp = quote.Up
+					lastDown = quote.Down
+				}
 
 				select {
 				case ch <- quote:
@@ -429,11 +436,13 @@ func (p *MarketProvider) SecondsUntilExpiry() float64 {
 func extractBestQuote(book OrderBookSummary) domain.SideQuote {
 	var bestBid, bestAsk float64
 
-	if len(book.Bids) > 0 {
-		bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+	// CLOB sorts bids ascending (worst→best), asks descending (worst→best)
+	// Best bid = last bid, best ask = last ask
+	if n := len(book.Bids); n > 0 {
+		bestBid, _ = strconv.ParseFloat(book.Bids[n-1].Price, 64)
 	}
-	if len(book.Asks) > 0 {
-		bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+	if n := len(book.Asks); n > 0 {
+		bestAsk, _ = strconv.ParseFloat(book.Asks[n-1].Price, 64)
 	}
 
 	return domain.SideQuote{Bid: bestBid, Ask: bestAsk}
