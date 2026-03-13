@@ -99,6 +99,14 @@ func (w *WebSocketOrderBook) sendJSON(payload map[string]any) error {
 	return w.conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// Close closes the underlying WebSocket connection, causing Run() to return.
+func (w *WebSocketOrderBook) Close() error {
+	if w.conn != nil {
+		return w.conn.Close()
+	}
+	return nil
+}
+
 func (w *WebSocketOrderBook) pingLoop() {
 	for {
 		time.Sleep(10 * time.Second)

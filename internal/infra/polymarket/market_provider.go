@@ -183,12 +183,20 @@ func (p *MarketProvider) runWSLoop(ctx context.Context, ch chan<- domain.MarketQ
 			"seconds_to_end", summary.ToEnd(),
 		)
 
+		endTime := time.Unix(summary.EndDateTS, 0)
+
 		// Connect WebSocket and stream until error or market expires
-		err = p.streamWS(ctx, upTokenID, downTokenID, marketID, ch)
+		err = p.streamWS(ctx, upTokenID, downTokenID, marketID, endTime, ch)
 		if err != nil && ctx.Err() == nil {
-			p.logger.Warn("ws: connection lost, reconnecting", "error", err)
+			p.logger.Warn("ws: connection lost or market expired, reconnecting", "error", err)
 			time.Sleep(1 * time.Second)
 		}
+
+		// Clear stale book state so new market starts fresh
+		p.mu.Lock()
+		p.upBook = OrderBookSummary{}
+		p.downBook = OrderBookSummary{}
+		p.mu.Unlock()
 	}
 }
 
@@ -235,7 +243,7 @@ type wsBookSide struct {
 	Size  string `json:"size"`
 }
 
-func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID string, marketID domain.MarketID, ch chan<- domain.MarketQuote) error {
+func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID string, marketID domain.MarketID, endTime time.Time, ch chan<- domain.MarketQuote) error {
 	msgCh := make(chan []byte, 256)
 
 	ws := NewWebSocketOrderBook(MarketChannel, func(message []byte) {
@@ -254,6 +262,9 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 		})
 	}()
 
+	// Ensure WS is closed when we return (causes Run goroutine to exit)
+	defer ws.Close()
+
 	// Also send explicit subscribe after connection establishes
 	time.Sleep(1 * time.Second)
 	if err := ws.SubscribeToTokenIDs([]string{upTokenID, downTokenID}); err != nil {
@@ -261,12 +272,24 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 	}
 	p.logger.Info("ws: subscribed to token IDs", "up", upTokenID[:20]+"...", "down", downTokenID[:20]+"...")
 
+	// Timer to detect market expiry so we can roll to the next market
+	expiryTimer := time.NewTimer(time.Until(endTime))
+	defer expiryTimer.Stop()
+
 	var lastUp, lastDown domain.SideQuote
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-expiryTimer.C:
+			// Market expired — unsubscribe from old tokens and return
+			tokenIDs := []string{upTokenID, downTokenID}
+			if err := ws.UnsubscribeToTokenIDs(tokenIDs); err != nil {
+				p.logger.Debug("ws: unsubscribe on expiry failed (connection may be closing)", "error", err)
+			}
+			p.logger.Info("ws: market expired, unsubscribed", "market", marketID)
+			return nil
 		case err := <-connectDone:
 			return fmt.Errorf("ws disconnected: %w", err)
 		case raw := <-msgCh:

@@ -9,7 +9,7 @@ import (
 
 func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 	t.Run("builds_state_from_ticks", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(1000)
+		svc := NewReferenceAnalyticsService(1000, 1000)
 
 		base := time.Now()
 		// Feed a series of ticks
@@ -38,7 +38,7 @@ func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 	})
 
 	t.Run("unknown_asset_returns_false", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(1000)
+		svc := NewReferenceAnalyticsService(1000, 1000)
 		_, ok := svc.GetState("BTC")
 		if ok {
 			t.Error("expected false for unknown asset")
@@ -46,7 +46,7 @@ func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 	})
 
 	t.Run("regime_classification", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(1000)
+		svc := NewReferenceAnalyticsService(1000, 1000)
 		base := time.Now()
 
 		// Feed calm ticks (tiny moves)
@@ -67,7 +67,7 @@ func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 	})
 
 	t.Run("jump_detection", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(1000)
+		svc := NewReferenceAnalyticsService(1000, 1000)
 		base := time.Now()
 
 		// Feed stable ticks
@@ -93,7 +93,7 @@ func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 	})
 
 	t.Run("trims_to_max_ticks", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(50)
+		svc := NewReferenceAnalyticsService(50, 1000)
 		base := time.Now()
 
 		for i := 0; i < 100; i++ {
@@ -110,25 +110,4 @@ func TestReferenceAnalyticsService_OnTick(t *testing.T) {
 		}
 	})
 
-	t.Run("get_current_vol_interface", func(t *testing.T) {
-		svc := NewReferenceAnalyticsService(1000)
-		base := time.Now()
-
-		for i := 0; i < 100; i++ {
-			price := 100.0 + float64(i)*0.01
-			svc.OnTick(domain.ChainlinkTick{
-				Asset:     "BTC",
-				Price:     price,
-				Timestamp: base.Add(time.Duration(i) * time.Second),
-			})
-		}
-
-		vol, err := svc.GetCurrentVol(nil, "BTC")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if vol <= 0 {
-			t.Errorf("expected positive vol, got %f", vol)
-		}
-	})
 }

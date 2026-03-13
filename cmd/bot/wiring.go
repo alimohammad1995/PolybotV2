@@ -23,7 +23,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	positionRepo := storage.NewInMemoryPositionRepo()
 
 	registry := service.NewMarketRegistry()
-	refAnalytics := service.NewReferenceAnalyticsService(5000)
+	refAnalytics := service.NewReferenceAnalyticsService(5000, cfg.ResampleIntervalMs)
 	positionSvc := service.NewPositionService(positionRepo)
 
 	// Resampler: converts irregular Chainlink ticks to fixed-interval grid

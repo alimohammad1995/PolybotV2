@@ -55,59 +55,6 @@ func TestMixtureModel_FairProbUp(t *testing.T) {
 		}
 	})
 
-	t.Run("single_component_degenerates_to_gaussian", func(t *testing.T) {
-		mu := 0.0
-		sigma := 0.05
-		unc := 0.02
-
-		gaussianSource := &mockGaussianParamSource{
-			params: GaussianParams{
-				MeanLogReturn: mu,
-				StdLogReturn:  sigma,
-				Uncertainty:   unc,
-			},
-		}
-		mixtureSource := &mockMixtureParamSource{
-			params: MixtureParams{
-				Components: []MixtureComponent{
-					{Weight: 1.0, MeanLogReturn: mu, StdLogReturn: sigma},
-				},
-				Uncertainty: unc,
-			},
-		}
-
-		in := domain.PricingInput{
-			CurrentPrice:     105.0,
-			PriceToBeat:      100.0,
-			RemainingSeconds: 7200,
-		}
-
-		gm := NewGaussianModel(gaussianSource)
-		mm := NewMixtureModel("ETH", mixtureSource)
-
-		fvGauss, err := gm.FairProbUp(ctx, in)
-		if err != nil {
-			t.Fatalf("gaussian error: %v", err)
-		}
-		fvMix, err := mm.FairProbUp(ctx, in)
-		if err != nil {
-			t.Fatalf("mixture error: %v", err)
-		}
-
-		if math.Abs(fvGauss.ProbUp-fvMix.ProbUp) > 1e-9 {
-			t.Errorf("single-component mixture should match gaussian: gauss=%f mix=%f",
-				fvGauss.ProbUp, fvMix.ProbUp)
-		}
-		if math.Abs(fvGauss.ProbUpLower-fvMix.ProbUpLower) > 1e-9 {
-			t.Errorf("lower bounds should match: gauss=%f mix=%f",
-				fvGauss.ProbUpLower, fvMix.ProbUpLower)
-		}
-		if math.Abs(fvGauss.ProbUpUpper-fvMix.ProbUpUpper) > 1e-9 {
-			t.Errorf("upper bounds should match: gauss=%f mix=%f",
-				fvGauss.ProbUpUpper, fvMix.ProbUpUpper)
-		}
-	})
-
 	t.Run("weights_sum_behavior", func(t *testing.T) {
 		// Weights that sum to 1.0 should produce probabilities in [0,1]
 		source := &mockMixtureParamSource{

@@ -67,18 +67,6 @@ func (r *InMemoryEventRepo) SaveSettlement(_ context.Context, s domain.Settlemen
 	return nil
 }
 
-func (r *InMemoryEventRepo) GetFairValues() []domain.FairValue {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]domain.FairValue{}, r.fairValues...)
-}
-
-func (r *InMemoryEventRepo) GetSignals() []domain.TradeSignal {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]domain.TradeSignal{}, r.signals...)
-}
-
 // InMemoryPositionRepo stores positions in memory. Replace with Postgres for production.
 type InMemoryPositionRepo struct {
 	mu        sync.Mutex

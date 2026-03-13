@@ -57,17 +57,25 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 		}, nil
 	}
 
-	// Use Chainlink 1m realized vol, fall back to 5m, then default
-	tickVol := in.RealizedVol1m
-	if tickVol <= 0 {
-		tickVol = in.RealizedVol5m
+	// Use Chainlink 1m realized vol (per-second), fall back to 5m, then default
+	perSecVol := in.RealizedVol1m
+	if perSecVol <= 0 {
+		perSecVol = in.RealizedVol5m
 	}
-	if tickVol <= 0 {
-		tickVol = m.DefaultVol
+	if perSecVol <= 0 {
+		perSecVol = m.DefaultVol
 	}
 
-	// Scale tick-level vol to remaining horizon
-	horizonStd := tickVol * math.Sqrt(in.RemainingSeconds)
+	// Vol floor: BTC annual ~60% => per-second ~0.0001.
+	// During calm periods measured vol can be unrealistically low; apply a floor
+	// so z-scores stay reasonable.
+	const volFloorPerSec = 0.00005
+	if perSecVol < volFloorPerSec {
+		perSecVol = volFloorPerSec
+	}
+
+	// Scale per-second vol to remaining horizon: σ_τ = σ_sec * √τ
+	horizonStd := perSecVol * math.Sqrt(in.RemainingSeconds)
 
 	if horizonStd <= 0 {
 		return domain.FairValue{}, fmt.Errorf("computed horizon std is zero")
@@ -80,7 +88,7 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 	// Apply isotonic calibration if available
 	pCal := pRaw
 	if m.Calibration != nil {
-		pCal = m.Calibration.Calibrate(pRaw, in.RemainingSeconds, tickVol)
+		pCal = m.Calibration.Calibrate(pRaw, in.RemainingSeconds, perSecVol)
 	}
 
 	// Compute dynamic uncertainty from calibrated probability

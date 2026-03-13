@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"math"
 	"sync"
 	"time"
@@ -23,15 +22,24 @@ type ReferenceAnalyticsService struct {
 	states   map[string]domain.ReferenceState
 	maxTicks int
 
+	// tickIntervalSec is the expected interval between resampled ticks (e.g. 0.5 for 500ms).
+	// Used to normalize per-tick vol to per-second vol.
+	tickIntervalSec float64
+
 	// Jump detection threshold: if |log return| > this, it's a jump
 	jumpThresholdMultiple float64
 }
 
-func NewReferenceAnalyticsService(maxTicks int) *ReferenceAnalyticsService {
+func NewReferenceAnalyticsService(maxTicks int, tickIntervalMs int) *ReferenceAnalyticsService {
+	intervalSec := float64(tickIntervalMs) / 1000.0
+	if intervalSec <= 0 {
+		intervalSec = 0.5 // default 500ms
+	}
 	return &ReferenceAnalyticsService{
 		ticks:                 make(map[string][]tickRecord),
 		states:                make(map[string]domain.ReferenceState),
 		maxTicks:              maxTicks,
+		tickIntervalSec:       intervalSec,
 		jumpThresholdMultiple: 4.0, // 4 sigma
 	}
 }
@@ -81,20 +89,6 @@ func (s *ReferenceAnalyticsService) GetState(asset string) (domain.ReferenceStat
 	defer s.mu.RUnlock()
 	state, ok := s.states[asset]
 	return state, ok
-}
-
-// GetCurrentVol implements the VolatilityGetter interface for backward compatibility.
-func (s *ReferenceAnalyticsService) GetCurrentVol(_ context.Context, asset string) (float64, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	state, ok := s.states[asset]
-	if !ok {
-		return 0.001, nil
-	}
-	if state.RealizedVol1m <= 0 {
-		return 0.001, nil
-	}
-	return state.RealizedVol1m, nil
 }
 
 func (s *ReferenceAnalyticsService) computeState(asset string, records []tickRecord) domain.ReferenceState {
@@ -165,7 +159,10 @@ func (s *ReferenceAnalyticsService) computeVolWindow(records []tickRecord, now t
 		variance = 0
 	}
 
-	return math.Sqrt(variance)
+	// Normalize from per-tick vol to per-second vol.
+	// Per-tick std / sqrt(tickInterval) = per-second std.
+	perTickVol := math.Sqrt(variance)
+	return perTickVol / math.Sqrt(s.tickIntervalSec)
 }
 
 func (s *ReferenceAnalyticsService) computeJumpScore(records []tickRecord) float64 {
@@ -205,14 +202,15 @@ func (s *ReferenceAnalyticsService) computeJumpScore(records []tickRecord) float
 }
 
 func (s *ReferenceAnalyticsService) classifyRegime(state domain.ReferenceState) string {
-	// Primary: use 1m vol level
+	// Primary: use 1m vol level (per-second vol)
 	// Secondary: check vol stability and jump score
+	// BTC annual vol ~60% => per-second vol ~0.0001
 	switch {
 	case state.JumpScore > s.jumpThresholdMultiple:
 		return "jump"
-	case state.RealizedVol1m < 0.0005:
+	case state.RealizedVol1m < 0.0007:
 		return "calm"
-	case state.RealizedVol1m < 0.0020:
+	case state.RealizedVol1m < 0.0028:
 		return "normal"
 	default:
 		return "volatile"
