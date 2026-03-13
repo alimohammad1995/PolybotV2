@@ -125,10 +125,9 @@ func (s *ReferenceAnalyticsService) computeVolWindow(records []tickRecord, now t
 	cutoff := now.Add(-window)
 
 	// Single-pass: accumulate sum and sumSq, skipping stale (zero-return) ticks.
-	// Chainlink updates every ~3s but the resampler emits every 500ms, so most
-	// ticks are stale repeats with logReturn=0. Including them crushes measured
-	// vol. We also track the actual mean interval between real price changes
-	// for correct time-scaling.
+	// Chainlink feeds can repeat the same price across consecutive ticks.
+	// Including zero-return ticks crushes measured vol. We track the actual mean
+	// interval between real price changes for correct time-scaling.
 	var sum, sumSq float64
 	var n int
 	var firstRealTS, lastRealTS time.Time
@@ -138,7 +137,7 @@ func (s *ReferenceAnalyticsService) computeVolWindow(records []tickRecord, now t
 		}
 		lr := records[i].LogReturn
 		if lr == 0 {
-			continue // stale resampled tick — skip
+			continue // stale tick — skip
 		}
 		sum += lr
 		sumSq += lr * lr

@@ -27,7 +27,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 
 	pricingModel := buildPricingModel(cfg, refAnalytics, logger)
 
-	costModel := &fixedCostModel{cost: 0.005}
+	costModel := &fixedCostModel{cost: 0.01}
 
 	signalSvc := service.NewSignalService(
 		costModel,

@@ -66,10 +66,9 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 		perSecVol = m.DefaultVol
 	}
 
-	// Vol floor: BTC annual ~60% => per-second ~0.0001.
-	// Chainlink feeds update every ~3s, so the 500ms resampler produces mostly
-	// zero log-returns, crushing measured vol to ~42% of reality. Floor at the
-	// market-implied median per-second vol for BTC.
+	// Vol floor: BTC annual ~60% => per-second ~0.00012.
+	// Chainlink feeds can have gaps between real price changes, so measured vol
+	// may underestimate. Floor at the market-implied median per-second vol for BTC.
 	const volFloorPerSec = 0.00012
 	if perSecVol < volFloorPerSec {
 		perSecVol = volFloorPerSec

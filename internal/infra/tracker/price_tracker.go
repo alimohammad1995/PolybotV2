@@ -141,7 +141,7 @@ func (t *PriceTracker) Run(ctx context.Context) {
 			}
 
 			// Compute directional edges (same formula as SignalService)
-			cost := 0.005 // approximate
+			cost := 0.01 // 1% fee
 			dirEdgeUp := fv.ProbUpLower - quote.Up.Ask - cost
 			dirEdgeDown := (1.0 - fv.ProbUpUpper) - quote.Down.Ask - cost
 

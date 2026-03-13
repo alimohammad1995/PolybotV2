@@ -150,26 +150,34 @@ func (r *StrategyRunner) EvaluateMarket(
 	signal := r.selectSignal(ctx, market, &fv, &quote)
 	_ = r.EventRepo.SaveSignal(ctx, signal)
 
-	r.Logger.Info("evaluated",
+	if signal.Side == domain.SignalNone {
+		r.Logger.Debug("no_trade",
+			"asset", market.Asset,
+			"ref", refState.CurrentPrice,
+			"beat", market.PriceToBeat,
+			"remaining", remaining,
+			"p_raw", fv.ProbRaw,
+			"up_ask", mktState.UpAsk,
+			"down_ask", mktState.DownAsk,
+		)
+		return nil
+	}
+
+	r.Logger.Info("signal",
 		"asset", market.Asset,
+		"side", signal.Side,
+		"type", signal.SignalType,
 		"ref", refState.CurrentPrice,
 		"beat", market.PriceToBeat,
 		"remaining", remaining,
 		"regime", refState.Regime,
-		"vol1m", refState.RealizedVol1m,
 		"p_raw", fv.ProbRaw,
 		"p_cal", fv.ProbCalibrated,
 		"p_lo", fv.ProbUpLower,
 		"p_hi", fv.ProbUpUpper,
 		"up_ask", mktState.UpAsk,
 		"down_ask", mktState.DownAsk,
-		"signal", signal.Side,
-		"signal_type", signal.SignalType,
 	)
-
-	if signal.Side == domain.SignalNone {
-		return nil
-	}
 
 	// === PERSISTENCE: require edge across N consecutive evaluations ===
 	if r.PersistenceFilter != nil && !r.PersistenceFilter.Check(signal) {
