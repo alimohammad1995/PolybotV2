@@ -21,6 +21,7 @@ type Config struct {
 	MinTradeShares          float64       `yaml:"min_trade_shares"` // Polymarket min order size in shares
 	FractionalKelly         float64       `yaml:"fractional_kelly"`
 	MaxAllowedSpread        float64       `yaml:"max_allowed_spread"`
+	MinTickCount            int           `yaml:"min_tick_count"` // minimum Chainlink ticks before trading
 	MaxQuoteAge             time.Duration `yaml:"max_quote_age"`
 	MaxReferenceAge         time.Duration `yaml:"max_reference_age"`
 	BankrollUSD             float64       `yaml:"bankroll_usd"`
@@ -69,6 +70,7 @@ func Load() (*Config, error) {
 		MinTradeShares:          5.0,
 		FractionalKelly:         0.05,
 		MaxAllowedSpread:        0.10,
+		MinTickCount:            10,
 		MaxQuoteAge:             30 * time.Second,
 		MaxReferenceAge:         10 * time.Second,
 		BankrollUSD:             100.0,
@@ -118,6 +120,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("HEDGE_PERSISTENCE_COUNT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.HedgePersistenceCount = n
+		}
+	}
+	if v := os.Getenv("MIN_TICK_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.MinTickCount = n
 		}
 	}
 	if v := os.Getenv("MIN_TRADE_SHARES"); v != "" {

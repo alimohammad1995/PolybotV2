@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"Polybot/internal/domain"
@@ -16,6 +17,7 @@ type FreshnessConfig struct {
 	MaxReferenceAge  time.Duration
 	MaxQuoteAge      time.Duration
 	MaxAllowedSpread float64
+	MinTickCount     int
 }
 
 type StrategyRunner struct {
@@ -30,6 +32,8 @@ type StrategyRunner struct {
 	Clock             ports.Clock
 	Freshness         FreshnessConfig
 	Logger            *slog.Logger
+
+	lastTradeTime time.Time // cooldown: prevent rapid-fire trades on buffered events
 }
 
 func NewStrategyRunner(
@@ -76,6 +80,11 @@ func (r *StrategyRunner) EvaluateMarket(
 ) error {
 	now := r.Clock.Now()
 
+	// === SAFETY GUARD: trade cooldown (2s) to prevent rapid-fire on buffered events ===
+	if !r.lastTradeTime.IsZero() && now.Sub(r.lastTradeTime) < 2*time.Second {
+		return nil
+	}
+
 	// === SAFETY GUARD: freshness checks ===
 	if reason := r.checkFreshness(now, refState, mktState); reason != "" {
 		r.Logger.Debug("skipping stale market",
@@ -97,7 +106,7 @@ func (r *StrategyRunner) EvaluateMarket(
 
 	// === SAFETY GUARD: quote sanity ===
 	if err := r.validateQuotes(mktState); err != nil {
-		r.Logger.Warn("quote sanity check failed",
+		r.Logger.Debug("quote sanity check failed",
 			"market", market.ID,
 			"error", err,
 		)
@@ -109,6 +118,16 @@ func (r *StrategyRunner) EvaluateMarket(
 		r.Logger.Info("rejecting due to extreme jump",
 			"market", market.ID,
 			"jump_score", refState.JumpScore,
+		)
+		return nil
+	}
+
+	// === SAFETY GUARD: warm-up — require N ticks for reliable vol estimates ===
+	if r.Freshness.MinTickCount > 0 && refState.TickCount < r.Freshness.MinTickCount {
+		r.Logger.Debug("waiting for warm-up ticks",
+			"market", market.ID,
+			"ticks", refState.TickCount,
+			"required", r.Freshness.MinTickCount,
 		)
 		return nil
 	}
@@ -151,46 +170,16 @@ func (r *StrategyRunner) EvaluateMarket(
 	_ = r.EventRepo.SaveSignal(ctx, signal)
 
 	if signal.Side == domain.SignalNone {
-		r.Logger.Debug("no_trade",
-			"asset", market.Asset,
-			"ref", refState.CurrentPrice,
-			"beat", market.PriceToBeat,
-			"remaining", remaining,
-			"p_raw", fv.ProbRaw,
-			"up_ask", mktState.UpAsk,
-			"down_ask", mktState.DownAsk,
-		)
 		return nil
 	}
 
-	r.Logger.Info("signal",
-		"asset", market.Asset,
-		"side", signal.Side,
-		"type", signal.SignalType,
-		"ref", refState.CurrentPrice,
-		"beat", market.PriceToBeat,
-		"remaining", remaining,
-		"regime", refState.Regime,
-		"p_raw", fv.ProbRaw,
-		"p_cal", fv.ProbCalibrated,
-		"p_lo", fv.ProbUpLower,
-		"p_hi", fv.ProbUpUpper,
-		"up_ask", mktState.UpAsk,
-		"down_ask", mktState.DownAsk,
-	)
-
 	// === PERSISTENCE: require edge across N consecutive evaluations ===
 	if r.PersistenceFilter != nil && !r.PersistenceFilter.Check(signal) {
-		r.Logger.Debug("signal not persistent enough",
-			"market", market.ID,
-			"side", signal.Side,
-			"type", signal.SignalType,
-		)
 		return nil
 	}
 
 	if !r.RiskSvc.ShouldAllowNewTrade(remaining) {
-		r.Logger.Info("blocked by cutoff", "market", market.ID, "remaining", remaining)
+		r.Logger.Debug("blocked by cutoff", "market", market.ID, "remaining", remaining)
 		return nil
 	}
 
@@ -240,7 +229,6 @@ func (r *StrategyRunner) executeSignal(
 
 	var edge float64
 	var maxPrice float64
-	var positionSide domain.PositionSide
 
 	switch signal.Side {
 	case domain.SignalBuyUp, domain.SignalHedgeUp:
@@ -249,14 +237,12 @@ func (r *StrategyRunner) executeSignal(
 			edge = signal.HedgeEdge
 		}
 		maxPrice = mktState.UpAsk
-		positionSide = domain.PositionUp
 	case domain.SignalBuyDown, domain.SignalHedgeDown:
 		edge = signal.EdgeBuyDown
 		if signal.SignalType == "hedge" {
 			edge = signal.HedgeEdge
 		}
 		maxPrice = mktState.DownAsk
-		positionSide = domain.PositionDown
 	default:
 		return nil
 	}
@@ -264,6 +250,29 @@ func (r *StrategyRunner) executeSignal(
 	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure, maxPrice)
 	if sizeUSD <= 0 {
 		return nil
+	}
+
+	// Hedge trades: cap at the number of shares needed to balance inventory.
+	// The hedge edge is per-share ΔG, but only valid up to |Nu - Nd| shares.
+	if signal.SignalType == "hedge" && maxPrice > 0 {
+		upQty, downQty, _, _ := r.PositionSvc.GetInventory(market.ID)
+		var balanceShares float64
+		switch signal.Side {
+		case domain.SignalHedgeUp:
+			balanceShares = downQty - upQty
+		case domain.SignalHedgeDown:
+			balanceShares = upQty - downQty
+		}
+		if balanceShares <= 0 {
+			return nil
+		}
+		maxHedgeUSD := balanceShares * maxPrice
+		if sizeUSD > maxHedgeUSD {
+			sizeUSD = math.Floor(balanceShares) * maxPrice
+		}
+		if sizeUSD <= 0 {
+			return nil
+		}
 	}
 
 	r.Logger.Info("executing",
@@ -287,6 +296,8 @@ func (r *StrategyRunner) executeSignal(
 		return fmt.Errorf("execution: %w", err)
 	}
 
+	r.lastTradeTime = time.Now()
+
 	// In paper mode (Filled=true, no OrderID), record position immediately.
 	// In live mode, the fill listener updates positions from confirmed WS events.
 	if result.Filled && result.OrderID == "" {
@@ -294,14 +305,12 @@ func (r *StrategyRunner) executeSignal(
 		if result.Price > 0 {
 			fillPrice = result.Price
 		}
-		return r.PositionSvc.RecordPosition(ctx, domain.Position{
-			MarketID:         market.ID,
-			Side:             positionSide,
-			AvgEntryPrice:    fillPrice,
-			Quantity:         sizeUSD / fillPrice,
-			NotionalUSD:      sizeUSD,
-			OpenedAt:         time.Now(),
-			HoldToSettlement: true,
+		return r.PositionSvc.AccumulateFill(ctx, domain.Fill{
+			MarketID:  market.ID,
+			Side:      signal.Side,
+			Price:     fillPrice,
+			SizeUSD:   sizeUSD,
+			Timestamp: time.Now(),
 		})
 	}
 

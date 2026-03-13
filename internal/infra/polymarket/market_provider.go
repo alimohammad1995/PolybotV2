@@ -328,7 +328,7 @@ func (p *MarketProvider) streamWS(ctx context.Context, upTokenID, downTokenID st
 				p.mu.RUnlock()
 
 				if quote.Up != lastUp || quote.Down != lastDown {
-					p.logger.Info("ws: price change",
+					p.logger.Debug("ws: price change",
 						"up_bid", quote.Up.Bid,
 						"up_ask", quote.Up.Ask,
 						"down_bid", quote.Down.Bid,

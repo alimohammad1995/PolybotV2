@@ -72,6 +72,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 			MaxReferenceAge:  cfg.MaxReferenceAge,
 			MaxQuoteAge:      cfg.MaxQuoteAge,
 			MaxAllowedSpread: cfg.MaxAllowedSpread,
+			MinTickCount:     cfg.MinTickCount,
 		},
 		logger,
 	)

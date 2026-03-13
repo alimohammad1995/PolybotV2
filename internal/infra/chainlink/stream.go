@@ -169,7 +169,7 @@ func (s *Stream) SubscribePrices(ctx context.Context, asset string) (<-chan doma
 
 			s.updateLatest(snap)
 
-			s.logger.Info("chainlink price",
+			s.logger.Debug("chainlink price",
 				"asset", asset,
 				"price", snap.Price,
 				"timestamp", snap.Timestamp.Format(time.RFC3339Nano),
