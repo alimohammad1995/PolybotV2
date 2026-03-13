@@ -75,6 +75,23 @@ func (s *PositionService) GetInventoryPenalty(marketID domain.MarketID) float64 
 	return total * 0.001 // 0.1% penalty per dollar of existing exposure
 }
 
+// GetInventory returns the quantity and total cost for UP and DOWN positions on a market.
+// Used by the hedge engine to compute guaranteed floor.
+func (s *PositionService) GetInventory(marketID domain.MarketID) (upQty, downQty, upCost, downCost float64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sides := s.positions[marketID]
+	if up, ok := sides[domain.PositionUp]; ok {
+		upQty = up.Quantity
+		upCost = up.NotionalUSD
+	}
+	if down, ok := sides[domain.PositionDown]; ok {
+		downQty = down.Quantity
+		downCost = down.NotionalUSD
+	}
+	return
+}
+
 func (s *PositionService) RecordPosition(ctx context.Context, p domain.Position) error {
 	s.mu.Lock()
 	if s.positions[p.MarketID] == nil {

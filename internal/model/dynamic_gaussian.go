@@ -21,6 +21,8 @@ type DynamicGaussianModel struct {
 	DefaultVol float64
 	// BaseUncertainty is the minimum model uncertainty
 	BaseUncertainty float64
+	// Calibration is an optional isotonic calibration map (p_raw -> p_cal)
+	Calibration *CalibrationMap
 }
 
 func NewDynamicGaussianModel(defaultVol, baseUncertainty float64) *DynamicGaussianModel {
@@ -46,6 +48,8 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 			ProbUp:           p,
 			ProbUpLower:      p,
 			ProbUpUpper:      p,
+			ProbRaw:          p,
+			ProbCalibrated:   p,
 			ModelUncertainty: 0,
 			RemainingSeconds: 0,
 			RequiredLogMove:  -logMoneyness,
@@ -63,8 +67,6 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 	}
 
 	// Scale tick-level vol to remaining horizon
-	// Assume tick vol is per-second std. Scale by sqrt(remaining seconds).
-	// If ticks are ~1 second apart, vol is already per-tick ≈ per-second.
 	horizonStd := tickVol * math.Sqrt(in.RemainingSeconds)
 
 	if horizonStd <= 0 {
@@ -72,20 +74,28 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 	}
 
 	// p_up = Φ(log(S/K) / σ̂_τ)
-	// No drift term — conservative assumption for short horizons
 	z := logMoneyness / horizonStd
-	p := NormalCDF(z)
+	pRaw := NormalCDF(z)
 
-	// Compute dynamic uncertainty
+	// Apply isotonic calibration if available
+	pCal := pRaw
+	if m.Calibration != nil {
+		pCal = m.Calibration.Calibrate(pRaw, in.RemainingSeconds, tickVol)
+	}
+
+	// Compute dynamic uncertainty from calibrated probability
 	uncertainty := m.computeUncertainty(in)
-
-	lower := Clamp01(p - uncertainty)
-	upper := Clamp01(p + uncertainty)
+	lower := Clamp01(pCal - uncertainty)
+	upper := Clamp01(pCal + uncertainty)
 
 	return domain.FairValue{
-		ProbUp:           Clamp01(p),
+		ProbUp:           Clamp01(pCal),
 		ProbUpLower:      lower,
 		ProbUpUpper:      upper,
+		ProbRaw:          Clamp01(pRaw),
+		ProbCalibrated:   Clamp01(pCal),
+		SigmaTau:         horizonStd,
+		ZScore:           z,
 		ModelUncertainty: uncertainty,
 		RemainingSeconds: in.RemainingSeconds,
 		RequiredLogMove:  -logMoneyness,

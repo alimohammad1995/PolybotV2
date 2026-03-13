@@ -218,3 +218,13 @@ func (s *ReferenceAnalyticsService) classifyRegime(state domain.ReferenceState) 
 		return "volatile"
 	}
 }
+
+// OnResampledTick processes a fixed-interval resampled tick.
+// Same logic as OnTick but with guaranteed uniform intervals for cleaner vol computation.
+func (s *ReferenceAnalyticsService) OnResampledTick(tick domain.ResampledTick) {
+	s.OnTick(domain.ChainlinkTick{
+		Asset:     tick.Asset,
+		Price:     tick.Price,
+		Timestamp: tick.Timestamp,
+	})
+}

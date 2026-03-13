@@ -11,7 +11,8 @@ import (
 
 type Config struct {
 	// Trading parameters
-	BaseHurdle              float64       `yaml:"base_hurdle"`
+	BaseHurdle              float64       `yaml:"base_hurdle"` // directional hurdle (alias)
+	HedgeHurdle             float64       `yaml:"hedge_hurdle"`
 	DefaultModelUncertainty float64       `yaml:"default_model_uncertainty"`
 	MaxPositionUSDPerMarket float64       `yaml:"max_position_usd_per_market"`
 	MaxTotalExposureUSD     float64       `yaml:"max_total_exposure_usd"`
@@ -22,6 +23,16 @@ type Config struct {
 	MaxQuoteAge             time.Duration `yaml:"max_quote_age"`
 	MaxReferenceAge         time.Duration `yaml:"max_reference_age"`
 	BankrollUSD             float64       `yaml:"bankroll_usd"`
+
+	// Persistence filter
+	PersistenceCount      int `yaml:"persistence_count"`
+	HedgePersistenceCount int `yaml:"hedge_persistence_count"`
+
+	// Resampler
+	ResampleIntervalMs int `yaml:"resample_interval_ms"`
+
+	// Calibration file (optional)
+	CalibrationFile string
 
 	// Polymarket
 	PrivateKey    string
@@ -51,6 +62,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		// Conservative defaults
 		BaseHurdle:              0.03,
+		HedgeHurdle:             0.005,
 		DefaultModelUncertainty: 0.02,
 		MaxPositionUSDPerMarket: 50.0,
 		MaxTotalExposureUSD:     200.0,
@@ -64,6 +76,9 @@ func Load() (*Config, error) {
 		Market:                  "btc",
 		Interval:                5,
 		Mode:                    "paper",
+		PersistenceCount:        3,
+		HedgePersistenceCount:   1,
+		ResampleIntervalMs:      500,
 	}
 
 	cfg.PrivateKey = os.Getenv("MAIN_ACCOUNT_PRIVATE_KEY")
@@ -73,6 +88,7 @@ func Load() (*Config, error) {
 	cfg.ChainlinkUserID = os.Getenv("CHAINLINK_USER_ID")
 	cfg.ChainlinkSecret = os.Getenv("CHAINLINK_SECRET")
 	cfg.ModelParamsFile = os.Getenv("MODEL_PARAMS_FILE")
+	cfg.CalibrationFile = os.Getenv("CALIBRATION_FILE")
 
 	if mode := os.Getenv("MODE"); mode != "" {
 		cfg.Mode = mode
@@ -83,6 +99,31 @@ func Load() (*Config, error) {
 	if interval := os.Getenv("INTERVAL"); interval != "" {
 		if v, err := strconv.Atoi(interval); err == nil {
 			cfg.Interval = v
+		}
+	}
+	if v := os.Getenv("DIRECTIONAL_HURDLE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.BaseHurdle = f
+		}
+	}
+	if v := os.Getenv("HEDGE_HURDLE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.HedgeHurdle = f
+		}
+	}
+	if v := os.Getenv("PERSISTENCE_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PersistenceCount = n
+		}
+	}
+	if v := os.Getenv("HEDGE_PERSISTENCE_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.HedgePersistenceCount = n
+		}
+	}
+	if v := os.Getenv("RESAMPLE_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ResampleIntervalMs = n
 		}
 	}
 

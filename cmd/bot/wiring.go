@@ -4,12 +4,14 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"Polybot/internal/app"
 	"Polybot/internal/config"
 	infraChainlink "Polybot/internal/infra/chainlink"
 	"Polybot/internal/infra/polymarket"
 	"Polybot/internal/infra/storage"
+	"Polybot/internal/infra/tracker"
 	"Polybot/internal/model"
 	"Polybot/internal/ports"
 	"Polybot/internal/service"
@@ -24,15 +26,29 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	refAnalytics := service.NewReferenceAnalyticsService(5000)
 	positionSvc := service.NewPositionService(positionRepo)
 
+	// Resampler: converts irregular Chainlink ticks to fixed-interval grid
+	resampler := service.NewResampler(time.Duration(cfg.ResampleIntervalMs) * time.Millisecond)
+	logger.Info("resampler configured", "interval_ms", cfg.ResampleIntervalMs)
+
 	pricingModel := buildPricingModel(cfg, refAnalytics, logger)
 
+	costModel := &fixedCostModel{cost: 0.005}
+
 	signalSvc := service.NewSignalService(
-		&fixedCostModel{cost: 0.005},
+		costModel,
 		service.SignalConfig{
 			BaseHurdle: cfg.BaseHurdle,
 			MaxSizeUSD: cfg.MaxPositionUSDPerMarket,
 		},
 	)
+
+	// Hedge engine: monitors inventory, buys opposite side to improve guaranteed floor
+	hedgeEngine := service.NewHedgeEngine(positionSvc, costModel, service.HedgeConfig{
+		HedgeHurdle: cfg.HedgeHurdle,
+	})
+
+	// Persistence filter: require edge across N consecutive evaluations
+	persistenceFilter := service.NewPersistenceFilter(cfg.PersistenceCount, cfg.HedgePersistenceCount)
 
 	riskSvc := service.NewRiskService(service.RiskConfig{
 		MaxPositionUSDPerMarket: cfg.MaxPositionUSDPerMarket,
@@ -49,6 +65,8 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	runner := strategy.NewStrategyRunner(
 		pricingModel,
 		signalSvc,
+		hedgeEngine,
+		persistenceFilter,
 		riskSvc,
 		execSvc,
 		positionSvc,
@@ -73,10 +91,12 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		},
 		Registry:       registry,
 		RefAnalytics:   refAnalytics,
+		Resampler:      resampler,
 		PositionSvc:    positionSvc,
 		Runner:         runner,
 		MarketData:     marketData,
 		RefPriceStream: refStream,
+		PriceTracker:   tracker.NewPriceTracker(registry, refAnalytics, pricingModel, positionSvc, hedgeEngine, "logs", logger),
 		Logger:         logger,
 	}
 }
@@ -118,6 +138,20 @@ func buildPricingModel(cfg *config.Config, refAnalytics *service.ReferenceAnalyt
 		}
 	}
 
+	m := model.NewDynamicGaussianModel(0.001, cfg.DefaultModelUncertainty)
+
+	// Load isotonic calibration if configured
+	if cfg.CalibrationFile != "" {
+		calMap, err := model.NewCalibrationMapFromFile(cfg.CalibrationFile)
+		if err != nil {
+			logger.Warn("failed to load calibration file, using uncalibrated model",
+				"file", cfg.CalibrationFile, "error", err)
+		} else {
+			m.Calibration = calMap
+			logger.Info("loaded isotonic calibration", "file", cfg.CalibrationFile)
+		}
+	}
+
 	logger.Info("using dynamic gaussian model (Chainlink vol-driven)")
-	return model.NewDynamicGaussianModel(0.001, cfg.DefaultModelUncertainty)
+	return m
 }

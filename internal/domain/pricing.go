@@ -7,11 +7,23 @@ type FairValue struct {
 	ProbUp           float64
 	ProbUpLower      float64
 	ProbUpUpper      float64
+	ProbRaw          float64 // uncalibrated probability from model
+	ProbCalibrated   float64 // after isotonic calibration (== ProbRaw if no calibration)
+	SigmaTau         float64 // horizon-scaled vol used in model
+	ZScore           float64 // log(S/K) / sigma_tau
 	ModelUncertainty float64
 	RemainingSeconds float64
 	RequiredLogMove  float64
 	ModelRegime      string
 	Timestamp        time.Time
+}
+
+// ResampledTick is a fixed-interval price observation derived from irregular Chainlink ticks.
+type ResampledTick struct {
+	Asset     string
+	Price     float64 // last-known (forward-filled) price
+	Timestamp time.Time
+	Interval  time.Duration
 }
 
 // PricingInput contains everything needed to compute fair probability.

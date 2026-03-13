@@ -17,9 +17,9 @@ func NewExecutionService(provider ports.ExecutionProvider) *ExecutionService {
 
 func (e *ExecutionService) Execute(ctx context.Context, req domain.ExecutionRequest) error {
 	switch req.Side {
-	case domain.SignalBuyUp:
+	case domain.SignalBuyUp, domain.SignalHedgeUp:
 		return e.Provider.BuyUp(ctx, req.MarketID, req.MaxPrice, req.SizeUSD)
-	case domain.SignalBuyDown:
+	case domain.SignalBuyDown, domain.SignalHedgeDown:
 		return e.Provider.BuyDown(ctx, req.MarketID, req.MaxPrice, req.SizeUSD)
 	default:
 		return nil

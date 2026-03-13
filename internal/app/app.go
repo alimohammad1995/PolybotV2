@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"Polybot/internal/domain"
+	"Polybot/internal/infra/tracker"
 	"Polybot/internal/ports"
 	"Polybot/internal/service"
 	"Polybot/internal/strategy"
@@ -15,10 +16,12 @@ type App struct {
 	Config         *AppConfig
 	Registry       *service.MarketRegistry
 	RefAnalytics   *service.ReferenceAnalyticsService
+	Resampler      *service.Resampler
 	PositionSvc    *service.PositionService
 	Runner         *strategy.StrategyRunner
 	MarketData     ports.MarketDataProvider
 	RefPriceStream ports.ReferencePriceProvider
+	PriceTracker   *tracker.PriceTracker
 	Logger         *slog.Logger
 }
 
@@ -48,6 +51,9 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Periodic reprice ticker (catch time decay)
 	go a.timeDecayTicker(ctx, repriceCh)
+
+	// Price tracker: log model vs market prices every second
+	go a.PriceTracker.Run(ctx)
 
 	// Single reprice loop — one market, one asset, CPU-bound evaluation
 	a.repriceLoop(ctx, repriceCh)
@@ -152,7 +158,22 @@ func (a *App) streamPolymarketQuotes(ctx context.Context, repriceCh chan<- domai
 }
 
 // streamChainlinkTicks processes Chainlink price feed for our asset.
+// Raw ticks are fed through the Resampler which emits fixed-interval ticks
+// to RefAnalytics for cleaner vol computation.
 func (a *App) streamChainlinkTicks(ctx context.Context, asset string, repriceCh chan<- domain.RepriceEvent) {
+	// Register resampler subscriber: resampled ticks → RefAnalytics + reprice events
+	if a.Resampler != nil {
+		a.Resampler.Subscribe(func(tick domain.ResampledTick) {
+			a.RefAnalytics.OnResampledTick(tick)
+			for _, marketID := range a.Registry.ListMarketIDsForAsset(tick.Asset) {
+				select {
+				case repriceCh <- domain.RepriceEvent{MarketID: marketID, Reason: "chainlink_tick"}:
+				default:
+				}
+			}
+		})
+	}
+
 	ch, err := a.RefPriceStream.SubscribePrices(ctx, asset)
 	if err != nil {
 		a.Logger.Error("failed to subscribe to chainlink", "asset", asset, "error", err)
@@ -168,16 +189,23 @@ func (a *App) streamChainlinkTicks(ctx context.Context, asset string, repriceCh 
 				return
 			}
 
-			a.RefAnalytics.OnTick(domain.ChainlinkTick{
+			tick := domain.ChainlinkTick{
 				Asset:     snap.Asset,
 				Price:     snap.Price,
 				Timestamp: snap.Timestamp,
-			})
+			}
 
-			for _, marketID := range a.Registry.ListMarketIDsForAsset(asset) {
-				select {
-				case repriceCh <- domain.RepriceEvent{MarketID: marketID, Reason: "chainlink_tick"}:
-				default:
+			if a.Resampler != nil {
+				// Feed through resampler — it will emit to RefAnalytics on grid boundaries
+				a.Resampler.OnRawTick(tick)
+			} else {
+				// No resampler — direct feed (backward compat)
+				a.RefAnalytics.OnTick(tick)
+				for _, marketID := range a.Registry.ListMarketIDsForAsset(asset) {
+					select {
+					case repriceCh <- domain.RepriceEvent{MarketID: marketID, Reason: "chainlink_tick"}:
+					default:
+					}
 				}
 			}
 		}

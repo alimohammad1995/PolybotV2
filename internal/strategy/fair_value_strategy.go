@@ -19,20 +19,24 @@ type FreshnessConfig struct {
 }
 
 type StrategyRunner struct {
-	PricingModel service.PricingModel
-	SignalSvc    *service.SignalService
-	RiskSvc      *service.RiskService
-	ExecSvc      *service.ExecutionService
-	PositionSvc  *service.PositionService
-	EventRepo    ports.EventRepository
-	Clock        ports.Clock
-	Freshness    FreshnessConfig
-	Logger       *slog.Logger
+	PricingModel      service.PricingModel
+	SignalSvc         *service.SignalService
+	HedgeEngine       *service.HedgeEngine
+	PersistenceFilter *service.PersistenceFilter
+	RiskSvc           *service.RiskService
+	ExecSvc           *service.ExecutionService
+	PositionSvc       *service.PositionService
+	EventRepo         ports.EventRepository
+	Clock             ports.Clock
+	Freshness         FreshnessConfig
+	Logger            *slog.Logger
 }
 
 func NewStrategyRunner(
 	pricing service.PricingModel,
 	signal *service.SignalService,
+	hedge *service.HedgeEngine,
+	persistence *service.PersistenceFilter,
 	risk *service.RiskService,
 	exec *service.ExecutionService,
 	position *service.PositionService,
@@ -42,19 +46,23 @@ func NewStrategyRunner(
 	logger *slog.Logger,
 ) *StrategyRunner {
 	return &StrategyRunner{
-		PricingModel: pricing,
-		SignalSvc:    signal,
-		RiskSvc:      risk,
-		ExecSvc:      exec,
-		PositionSvc:  position,
-		EventRepo:    eventRepo,
-		Clock:        clock,
-		Freshness:    freshness,
-		Logger:       logger,
+		PricingModel:      pricing,
+		SignalSvc:         signal,
+		HedgeEngine:       hedge,
+		PersistenceFilter: persistence,
+		RiskSvc:           risk,
+		ExecSvc:           exec,
+		PositionSvc:       position,
+		EventRepo:         eventRepo,
+		Clock:             clock,
+		Freshness:         freshness,
+		Logger:            logger,
 	}
 }
 
 // EvaluateMarket runs the full pricing->signal->risk->execution pipeline.
+//
+// Decision priority: hedge trade > directional trade > no trade
 //
 // refState comes from Chainlink (truth process).
 // mktState comes from Polymarket (execution venue).
@@ -129,7 +137,7 @@ func (r *StrategyRunner) EvaluateMarket(
 
 	_ = r.EventRepo.SaveFairValue(ctx, fv)
 
-	// Convert MarketState to MarketQuote for signal service
+	// Convert MarketState to MarketQuote for signal/hedge engines
 	quote := domain.MarketQuote{
 		MarketID:  market.ID,
 		Up:        domain.SideQuote{Bid: mktState.UpBid, Ask: mktState.UpAsk},
@@ -138,52 +146,109 @@ func (r *StrategyRunner) EvaluateMarket(
 	}
 	_ = r.EventRepo.SaveQuote(ctx, quote)
 
-	// === SIGNAL: compare Chainlink fair value against Polymarket asks ===
-	inventoryPenalty := r.PositionSvc.GetInventoryPenalty(market.ID)
-
-	signal, err := r.SignalSvc.Generate(ctx, &fv, &quote, inventoryPenalty)
-	if err != nil {
-		return fmt.Errorf("signal: %w", err)
-	}
+	// === SELECTOR: hedge > directional > no trade ===
+	signal := r.selectSignal(ctx, market, &fv, &quote)
 	_ = r.EventRepo.SaveSignal(ctx, signal)
 
 	r.Logger.Info("evaluated",
-		"market", market.ID,
 		"asset", market.Asset,
 		"ref", refState.CurrentPrice,
 		"beat", market.PriceToBeat,
 		"remaining", remaining,
 		"regime", refState.Regime,
 		"vol1m", refState.RealizedVol1m,
-		"prob", fv.ProbUp,
-		"lower", fv.ProbUpLower,
-		"upper", fv.ProbUpUpper,
+		"p_raw", fv.ProbRaw,
+		"p_cal", fv.ProbCalibrated,
+		"p_lo", fv.ProbUpLower,
+		"p_hi", fv.ProbUpUpper,
 		"up_ask", mktState.UpAsk,
 		"down_ask", mktState.DownAsk,
-		"edge_up", signal.EdgeBuyUp,
-		"edge_down", signal.EdgeBuyDown,
 		"signal", signal.Side,
+		"signal_type", signal.SignalType,
 	)
 
 	if signal.Side == domain.SignalNone {
 		return nil
 	}
+
+	// === PERSISTENCE: require edge across N consecutive evaluations ===
+	if r.PersistenceFilter != nil && !r.PersistenceFilter.Check(signal) {
+		r.Logger.Debug("signal not persistent enough",
+			"market", market.ID,
+			"side", signal.Side,
+			"type", signal.SignalType,
+		)
+		return nil
+	}
+
 	if !r.RiskSvc.ShouldAllowNewTrade(remaining) {
 		r.Logger.Info("blocked by cutoff", "market", market.ID, "remaining", remaining)
 		return nil
 	}
 
+	return r.executeSignal(ctx, market, &signal, mktState, refState, bankrollUSD)
+}
+
+// selectSignal implements the decision priority: hedge > directional > no trade.
+func (r *StrategyRunner) selectSignal(
+	ctx context.Context,
+	market *domain.BinaryMarket,
+	fv *domain.FairValue,
+	quote *domain.MarketQuote,
+) domain.TradeSignal {
+	// Priority 1: hedge trade (monetize existing inventory)
+	if r.HedgeEngine != nil {
+		hedgeSignal, err := r.HedgeEngine.Evaluate(ctx, market.ID, quote)
+		if err == nil && hedgeSignal.Side != domain.SignalNone {
+			return hedgeSignal
+		}
+	}
+
+	// Priority 2: directional trade
+	inventoryPenalty := r.PositionSvc.GetInventoryPenalty(market.ID)
+	dirSignal, err := r.SignalSvc.Generate(ctx, fv, quote, inventoryPenalty)
+	if err != nil {
+		r.Logger.Warn("signal generation error", "market", market.ID, "error", err)
+		return domain.TradeSignal{
+			MarketID:   market.ID,
+			Side:       domain.SignalNone,
+			SignalType: "directional",
+			Timestamp:  time.Now(),
+		}
+	}
+	dirSignal.SignalType = "directional"
+	return dirSignal
+}
+
+func (r *StrategyRunner) executeSignal(
+	ctx context.Context,
+	market *domain.BinaryMarket,
+	signal *domain.TradeSignal,
+	mktState *domain.MarketState,
+	refState *domain.ReferenceState,
+	bankrollUSD float64,
+) error {
 	currentExposure := r.PositionSvc.GetExposureForMarket(market.ID)
 
 	var edge float64
 	var maxPrice float64
+	var positionSide domain.PositionSide
+
 	switch signal.Side {
-	case domain.SignalBuyUp:
+	case domain.SignalBuyUp, domain.SignalHedgeUp:
 		edge = signal.EdgeBuyUp
+		if signal.SignalType == "hedge" {
+			edge = signal.HedgeEdge
+		}
 		maxPrice = mktState.UpAsk
-	case domain.SignalBuyDown:
+		positionSide = domain.PositionUp
+	case domain.SignalBuyDown, domain.SignalHedgeDown:
 		edge = signal.EdgeBuyDown
+		if signal.SignalType == "hedge" {
+			edge = signal.HedgeEdge
+		}
 		maxPrice = mktState.DownAsk
+		positionSide = domain.PositionDown
 	default:
 		return nil
 	}
@@ -196,13 +261,14 @@ func (r *StrategyRunner) EvaluateMarket(
 	r.Logger.Info("executing",
 		"market", market.ID,
 		"side", signal.Side,
+		"type", signal.SignalType,
 		"max_price", maxPrice,
 		"size_usd", sizeUSD,
 		"edge", edge,
 		"regime", refState.Regime,
 	)
 
-	err = r.ExecSvc.Execute(ctx, domain.ExecutionRequest{
+	err := r.ExecSvc.Execute(ctx, domain.ExecutionRequest{
 		MarketID: market.ID,
 		Side:     signal.Side,
 		MaxPrice: maxPrice,
@@ -213,13 +279,9 @@ func (r *StrategyRunner) EvaluateMarket(
 		return fmt.Errorf("execution: %w", err)
 	}
 
-	side := domain.PositionUp
-	if signal.Side == domain.SignalBuyDown {
-		side = domain.PositionDown
-	}
 	return r.PositionSvc.RecordPosition(ctx, domain.Position{
 		MarketID:         market.ID,
-		Side:             side,
+		Side:             positionSide,
 		AvgEntryPrice:    maxPrice,
 		Quantity:         sizeUSD / maxPrice,
 		NotionalUSD:      sizeUSD,
