@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"Polybot/internal/app"
 	"Polybot/internal/config"
@@ -23,12 +22,8 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	positionRepo := storage.NewInMemoryPositionRepo()
 
 	registry := service.NewMarketRegistry()
-	refAnalytics := service.NewReferenceAnalyticsService(5000, cfg.ResampleIntervalMs)
+	refAnalytics := service.NewReferenceAnalyticsService(5000)
 	positionSvc := service.NewPositionService(positionRepo)
-
-	// Resampler: converts irregular Chainlink ticks to fixed-interval grid
-	resampler := service.NewResampler(time.Duration(cfg.ResampleIntervalMs) * time.Millisecond)
-	logger.Info("resampler configured", "interval_ms", cfg.ResampleIntervalMs)
 
 	pricingModel := buildPricingModel(cfg, refAnalytics, logger)
 
@@ -100,7 +95,6 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		},
 		Registry:       registry,
 		RefAnalytics:   refAnalytics,
-		Resampler:      resampler,
 		PositionSvc:    positionSvc,
 		Runner:         runner,
 		MarketData:     marketData,

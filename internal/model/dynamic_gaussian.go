@@ -67,9 +67,10 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 	}
 
 	// Vol floor: BTC annual ~60% => per-second ~0.0001.
-	// During calm periods measured vol can be unrealistically low; apply a floor
-	// so z-scores stay reasonable.
-	const volFloorPerSec = 0.00005
+	// Chainlink feeds update every ~3s, so the 500ms resampler produces mostly
+	// zero log-returns, crushing measured vol to ~42% of reality. Floor at the
+	// market-implied median per-second vol for BTC.
+	const volFloorPerSec = 0.00012
 	if perSecVol < volFloorPerSec {
 		perSecVol = volFloorPerSec
 	}
@@ -83,6 +84,15 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 
 	// p_up = Φ(log(S/K) / σ̂_τ)
 	z := logMoneyness / horizonStd
+
+	// Clamp z to [-3, +3]: for 5-minute binaries there is always meaningful
+	// uncertainty. Unclamped z reached 41.9 in production, giving p_raw ≈ 1.0.
+	if z > 3.0 {
+		z = 3.0
+	} else if z < -3.0 {
+		z = -3.0
+	}
+
 	pRaw := NormalCDF(z)
 
 	// Apply isotonic calibration if available

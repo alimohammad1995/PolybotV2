@@ -18,14 +18,6 @@ type FairValue struct {
 	Timestamp        time.Time
 }
 
-// ResampledTick is a fixed-interval price observation derived from irregular Chainlink ticks.
-type ResampledTick struct {
-	Asset     string
-	Price     float64 // last-known (forward-filled) price
-	Timestamp time.Time
-	Interval  time.Duration
-}
-
 // PricingInput contains everything needed to compute fair probability.
 // CurrentPrice + vol come from Chainlink (truth process).
 // PriceToBeat + RemainingSeconds come from market metadata.

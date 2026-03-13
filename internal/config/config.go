@@ -29,9 +29,6 @@ type Config struct {
 	PersistenceCount      int `yaml:"persistence_count"`
 	HedgePersistenceCount int `yaml:"hedge_persistence_count"`
 
-	// Resampler
-	ResampleIntervalMs int `yaml:"resample_interval_ms"`
-
 	// Calibration file (optional)
 	CalibrationFile string
 
@@ -80,7 +77,6 @@ func Load() (*Config, error) {
 		Mode:                    "paper",
 		PersistenceCount:        3,
 		HedgePersistenceCount:   1,
-		ResampleIntervalMs:      500,
 	}
 
 	cfg.PrivateKey = os.Getenv("MAIN_ACCOUNT_PRIVATE_KEY")
@@ -128,11 +124,5 @@ func Load() (*Config, error) {
 			cfg.MinTradeShares = f
 		}
 	}
-	if v := os.Getenv("RESAMPLE_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.ResampleIntervalMs = n
-		}
-	}
-
 	return cfg, nil
 }

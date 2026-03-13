@@ -22,24 +22,15 @@ type ReferenceAnalyticsService struct {
 	states   map[string]domain.ReferenceState
 	maxTicks int
 
-	// tickIntervalSec is the expected interval between resampled ticks (e.g. 0.5 for 500ms).
-	// Used to normalize per-tick vol to per-second vol.
-	tickIntervalSec float64
-
 	// Jump detection threshold: if |log return| > this, it's a jump
 	jumpThresholdMultiple float64
 }
 
-func NewReferenceAnalyticsService(maxTicks int, tickIntervalMs int) *ReferenceAnalyticsService {
-	intervalSec := float64(tickIntervalMs) / 1000.0
-	if intervalSec <= 0 {
-		intervalSec = 0.5 // default 500ms
-	}
+func NewReferenceAnalyticsService(maxTicks int) *ReferenceAnalyticsService {
 	return &ReferenceAnalyticsService{
 		ticks:                 make(map[string][]tickRecord),
 		states:                make(map[string]domain.ReferenceState),
 		maxTicks:              maxTicks,
-		tickIntervalSec:       intervalSec,
 		jumpThresholdMultiple: 4.0, // 4 sigma
 	}
 }
@@ -133,19 +124,29 @@ func (s *ReferenceAnalyticsService) computeState(asset string, records []tickRec
 func (s *ReferenceAnalyticsService) computeVolWindow(records []tickRecord, now time.Time, window time.Duration) float64 {
 	cutoff := now.Add(-window)
 
-	// Single-pass: accumulate sum and sumSq directly without intermediate slice
+	// Single-pass: accumulate sum and sumSq, skipping stale (zero-return) ticks.
+	// Chainlink updates every ~3s but the resampler emits every 500ms, so most
+	// ticks are stale repeats with logReturn=0. Including them crushes measured
+	// vol. We also track the actual mean interval between real price changes
+	// for correct time-scaling.
 	var sum, sumSq float64
 	var n int
+	var firstRealTS, lastRealTS time.Time
 	for i := 1; i < len(records); i++ {
 		if records[i].Timestamp.Before(cutoff) {
 			continue
 		}
-		if records[i].LogReturn != 0 || (i > 0 && records[i-1].Price > 0) {
-			lr := records[i].LogReturn
-			sum += lr
-			sumSq += lr * lr
-			n++
+		lr := records[i].LogReturn
+		if lr == 0 {
+			continue // stale resampled tick — skip
 		}
+		sum += lr
+		sumSq += lr * lr
+		n++
+		if firstRealTS.IsZero() {
+			firstRealTS = records[i].Timestamp
+		}
+		lastRealTS = records[i].Timestamp
 	}
 
 	if n < 2 {
@@ -159,10 +160,18 @@ func (s *ReferenceAnalyticsService) computeVolWindow(records []tickRecord, now t
 		variance = 0
 	}
 
-	// Normalize from per-tick vol to per-second vol.
-	// Per-tick std / sqrt(tickInterval) = per-second std.
-	perTickVol := math.Sqrt(variance)
-	return perTickVol / math.Sqrt(s.tickIntervalSec)
+	// Normalize per-change vol to per-second vol using the actual mean interval
+	// between real price changes, not the resample interval.
+	perChangeVol := math.Sqrt(variance)
+	spanSec := lastRealTS.Sub(firstRealTS).Seconds()
+	if spanSec <= 0 {
+		return perChangeVol / math.Sqrt(1.0)
+	}
+	meanIntervalSec := spanSec / float64(n-1)
+	if meanIntervalSec <= 0 {
+		meanIntervalSec = 1.0
+	}
+	return perChangeVol / math.Sqrt(meanIntervalSec)
 }
 
 func (s *ReferenceAnalyticsService) computeJumpScore(records []tickRecord) float64 {
@@ -215,14 +224,4 @@ func (s *ReferenceAnalyticsService) classifyRegime(state domain.ReferenceState) 
 	default:
 		return "volatile"
 	}
-}
-
-// OnResampledTick processes a fixed-interval resampled tick.
-// Same logic as OnTick but with guaranteed uniform intervals for cleaner vol computation.
-func (s *ReferenceAnalyticsService) OnResampledTick(tick domain.ResampledTick) {
-	s.OnTick(domain.ChainlinkTick{
-		Asset:     tick.Asset,
-		Price:     tick.Price,
-		Timestamp: tick.Timestamp,
-	})
 }
