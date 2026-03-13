@@ -97,6 +97,7 @@ func Load() (*Config, error) {
 	if interval := os.Getenv("INTERVAL"); interval != "" {
 		if v, err := strconv.Atoi(interval); err == nil {
 			cfg.Interval = v
+			cfg.NoNewTradeCutoffSecs = float64(v * 60 / 10)
 		}
 	}
 	if v := os.Getenv("DIRECTIONAL_HURDLE"); v != "" {
