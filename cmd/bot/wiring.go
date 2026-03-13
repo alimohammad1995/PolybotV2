@@ -56,6 +56,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		NoNewTradeCutoffSecs:    cfg.NoNewTradeCutoffSecs,
 		FractionalKelly:         cfg.FractionalKelly,
 		MinTradeSizeUSD:         cfg.MinTradeSizeUSD,
+		MinTradeShares:          cfg.MinTradeShares,
 	})
 
 	clobClient := buildClobClient(cfg, logger)
@@ -83,6 +84,14 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 	asset := strings.ToUpper(cfg.Market)
 	marketData := polymarket.NewMarketProvider(clobClient, cfg.Market, cfg.Interval, logger)
 
+	// Fill listener: in live mode, subscribes to Polymarket user WS for trade confirmations.
+	// In paper mode, fills are simulated immediately — no listener needed.
+	var fillListener ports.FillListener
+	if cfg.Mode == "live" {
+		fillListener = polymarket.NewFillListener(clobClient, registry, positionSvc, logger)
+		logger.Info("fill listener enabled (live mode)")
+	}
+
 	return &app.App{
 		Config: &app.AppConfig{
 			BankrollUSD: cfg.BankrollUSD,
@@ -97,6 +106,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		MarketData:     marketData,
 		RefPriceStream: refStream,
 		PriceTracker:   tracker.NewPriceTracker(registry, refAnalytics, pricingModel, positionSvc, hedgeEngine, "logs", logger),
+		FillListener:   fillListener,
 		Logger:         logger,
 	}
 }

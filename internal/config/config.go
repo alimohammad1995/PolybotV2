@@ -18,6 +18,7 @@ type Config struct {
 	MaxTotalExposureUSD     float64       `yaml:"max_total_exposure_usd"`
 	NoNewTradeCutoffSecs    float64       `yaml:"no_new_trade_cutoff_secs"`
 	MinTradeSizeUSD         float64       `yaml:"min_trade_size_usd"`
+	MinTradeShares          float64       `yaml:"min_trade_shares"` // Polymarket min order size in shares
 	FractionalKelly         float64       `yaml:"fractional_kelly"`
 	MaxAllowedSpread        float64       `yaml:"max_allowed_spread"`
 	MaxQuoteAge             time.Duration `yaml:"max_quote_age"`
@@ -68,6 +69,7 @@ func Load() (*Config, error) {
 		MaxTotalExposureUSD:     200.0,
 		NoNewTradeCutoffSecs:    60.0,
 		MinTradeSizeUSD:         1.0,
+		MinTradeShares:          5.0,
 		FractionalKelly:         0.05,
 		MaxAllowedSpread:        0.10,
 		MaxQuoteAge:             30 * time.Second,
@@ -119,6 +121,11 @@ func Load() (*Config, error) {
 	if v := os.Getenv("HEDGE_PERSISTENCE_COUNT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.HedgePersistenceCount = n
+		}
+	}
+	if v := os.Getenv("MIN_TRADE_SHARES"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.MinTradeShares = f
 		}
 	}
 	if v := os.Getenv("RESAMPLE_INTERVAL_MS"); v != "" {

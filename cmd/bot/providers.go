@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"Polybot/internal/domain"
+	"Polybot/internal/ports"
 )
 
 // fixedCostModel returns a constant cost estimate.
@@ -21,14 +22,14 @@ type paperExecutionProvider struct {
 	logger *slog.Logger
 }
 
-func (p *paperExecutionProvider) BuyUp(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) error {
+func (p *paperExecutionProvider) BuyUp(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) (ports.OrderResult, error) {
 	p.logger.Info("[PAPER] buy UP", "market", marketID, "max_price", maxPrice, "size_usd", sizeUSD)
-	return nil
+	return ports.OrderResult{Filled: true, Price: maxPrice, Size: sizeUSD / maxPrice}, nil
 }
 
-func (p *paperExecutionProvider) BuyDown(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) error {
+func (p *paperExecutionProvider) BuyDown(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) (ports.OrderResult, error) {
 	p.logger.Info("[PAPER] buy DOWN", "market", marketID, "max_price", maxPrice, "size_usd", sizeUSD)
-	return nil
+	return ports.OrderResult{Filled: true, Price: maxPrice, Size: sizeUSD / maxPrice}, nil
 }
 
 func (p *paperExecutionProvider) ClosePosition(_ context.Context, marketID domain.MarketID, side domain.PositionSide) error {

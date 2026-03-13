@@ -253,7 +253,7 @@ func (r *StrategyRunner) executeSignal(
 		return nil
 	}
 
-	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure)
+	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure, maxPrice)
 	if sizeUSD <= 0 {
 		return nil
 	}
@@ -268,7 +268,7 @@ func (r *StrategyRunner) executeSignal(
 		"regime", refState.Regime,
 	)
 
-	err := r.ExecSvc.Execute(ctx, domain.ExecutionRequest{
+	result, err := r.ExecSvc.Execute(ctx, domain.ExecutionRequest{
 		MarketID: market.ID,
 		Side:     signal.Side,
 		MaxPrice: maxPrice,
@@ -279,15 +279,30 @@ func (r *StrategyRunner) executeSignal(
 		return fmt.Errorf("execution: %w", err)
 	}
 
-	return r.PositionSvc.RecordPosition(ctx, domain.Position{
-		MarketID:         market.ID,
-		Side:             positionSide,
-		AvgEntryPrice:    maxPrice,
-		Quantity:         sizeUSD / maxPrice,
-		NotionalUSD:      sizeUSD,
-		OpenedAt:         time.Now(),
-		HoldToSettlement: true,
-	})
+	// In paper mode (Filled=true, no OrderID), record position immediately.
+	// In live mode, the fill listener updates positions from confirmed WS events.
+	if result.Filled && result.OrderID == "" {
+		fillPrice := maxPrice
+		if result.Price > 0 {
+			fillPrice = result.Price
+		}
+		return r.PositionSvc.RecordPosition(ctx, domain.Position{
+			MarketID:         market.ID,
+			Side:             positionSide,
+			AvgEntryPrice:    fillPrice,
+			Quantity:         sizeUSD / fillPrice,
+			NotionalUSD:      sizeUSD,
+			OpenedAt:         time.Now(),
+			HoldToSettlement: true,
+		})
+	}
+
+	r.Logger.Info("order submitted, awaiting fill confirmation",
+		"market", market.ID,
+		"order_id", result.OrderID,
+		"filled", result.Filled,
+	)
+	return nil
 }
 
 // OnMarketUpdate is a backward-compatible wrapper that constructs

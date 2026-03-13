@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"Polybot/internal/domain"
+	"Polybot/internal/ports"
 	"Polybot/internal/service"
 )
 
@@ -25,25 +26,25 @@ func NewExecutionProvider(client *ClobClient, registry *service.MarketRegistry, 
 	}
 }
 
-func (e *ExecutionProvider) BuyUp(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) error {
+func (e *ExecutionProvider) BuyUp(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) (ports.OrderResult, error) {
 	market, ok := e.registry.GetMarket(marketID)
 	if !ok {
-		return fmt.Errorf("market %s not found in registry", marketID)
+		return ports.OrderResult{}, fmt.Errorf("market %s not found in registry", marketID)
 	}
 	if market.UpTokenID == "" {
-		return fmt.Errorf("market %s has no UpTokenID", marketID)
+		return ports.OrderResult{}, fmt.Errorf("market %s has no UpTokenID", marketID)
 	}
 
 	return e.placeMarketBuy(market.UpTokenID, maxPrice, sizeUSD, marketID, "UP")
 }
 
-func (e *ExecutionProvider) BuyDown(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) error {
+func (e *ExecutionProvider) BuyDown(_ context.Context, marketID domain.MarketID, maxPrice float64, sizeUSD float64) (ports.OrderResult, error) {
 	market, ok := e.registry.GetMarket(marketID)
 	if !ok {
-		return fmt.Errorf("market %s not found in registry", marketID)
+		return ports.OrderResult{}, fmt.Errorf("market %s not found in registry", marketID)
 	}
 	if market.DownTokenID == "" {
-		return fmt.Errorf("market %s has no DownTokenID", marketID)
+		return ports.OrderResult{}, fmt.Errorf("market %s has no DownTokenID", marketID)
 	}
 
 	return e.placeMarketBuy(market.DownTokenID, maxPrice, sizeUSD, marketID, "DOWN")
@@ -65,10 +66,9 @@ func (e *ExecutionProvider) ClosePosition(_ context.Context, marketID domain.Mar
 		return fmt.Errorf("market %s has no token ID for side %s", marketID, side)
 	}
 
-	// Sell to close — use a market sell at minimum price to fill immediately
 	order, err := e.client.CreateMarketOrder(MarketOrderArgs{
 		TokenID:   tokenID,
-		Amount:    0, // TODO: look up position size from position service
+		Amount:    0,
 		Side:      SideSell,
 		OrderType: OrderTypeFOK,
 	}, nil)
@@ -90,7 +90,7 @@ func (e *ExecutionProvider) ClosePosition(_ context.Context, marketID domain.Mar
 	return nil
 }
 
-func (e *ExecutionProvider) placeMarketBuy(tokenID string, maxPrice float64, sizeUSD float64, marketID domain.MarketID, sideLabel string) error {
+func (e *ExecutionProvider) placeMarketBuy(tokenID string, maxPrice float64, sizeUSD float64, marketID domain.MarketID, sideLabel string) (ports.OrderResult, error) {
 	order, err := e.client.CreateMarketOrder(MarketOrderArgs{
 		TokenID:   tokenID,
 		Amount:    sizeUSD,
@@ -99,13 +99,15 @@ func (e *ExecutionProvider) placeMarketBuy(tokenID string, maxPrice float64, siz
 		OrderType: OrderTypeFOK,
 	}, nil)
 	if err != nil {
-		return fmt.Errorf("create %s order for %s: %w", sideLabel, marketID, err)
+		return ports.OrderResult{}, fmt.Errorf("create %s order for %s: %w", sideLabel, marketID, err)
 	}
 
 	resp, err := e.client.PostOrder(&order, OrderTypeFOK)
 	if err != nil {
-		return fmt.Errorf("post %s order for %s: %w", sideLabel, marketID, err)
+		return ports.OrderResult{}, fmt.Errorf("post %s order for %s: %w", sideLabel, marketID, err)
 	}
+
+	result := parseOrderResponse(resp)
 
 	e.logger.Info("[LIVE] buy",
 		"market", marketID,
@@ -113,8 +115,31 @@ func (e *ExecutionProvider) placeMarketBuy(tokenID string, maxPrice float64, siz
 		"token_id", tokenID,
 		"max_price", maxPrice,
 		"size_usd", sizeUSD,
-		"response", fmt.Sprintf("%v", resp),
+		"order_id", result.OrderID,
+		"filled", result.Filled,
 		"timestamp", time.Now().Format(time.RFC3339),
 	)
-	return nil
+	return result, nil
+}
+
+// parseOrderResponse extracts order ID and fill status from the PostOrder API response.
+// Polymarket returns: {"orderID": "...", "status": "matched"|"live"|...}
+func parseOrderResponse(resp any) ports.OrderResult {
+	m, ok := resp.(map[string]any)
+	if !ok {
+		return ports.OrderResult{}
+	}
+
+	result := ports.OrderResult{}
+
+	if id, ok := m["orderID"].(string); ok {
+		result.OrderID = id
+	}
+
+	// FOK orders are either fully matched or rejected
+	if status, ok := m["status"].(string); ok {
+		result.Filled = status == "matched" || status == "MATCHED"
+	}
+
+	return result
 }

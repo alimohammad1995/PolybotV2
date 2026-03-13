@@ -92,6 +92,43 @@ func (s *PositionService) GetInventory(marketID domain.MarketID) (upQty, downQty
 	return
 }
 
+// AccumulateFill adds a fill to the existing position for the given market and side.
+// If no position exists, it creates one. If a position exists, it updates the
+// weighted average entry price, adds quantity, and adds notional cost.
+func (s *PositionService) AccumulateFill(ctx context.Context, fill domain.Fill) error {
+	side := fillSideToPositionSide(fill.Side)
+
+	s.mu.Lock()
+	if s.positions[fill.MarketID] == nil {
+		s.positions[fill.MarketID] = make(map[domain.PositionSide]domain.Position)
+	}
+
+	existing, ok := s.positions[fill.MarketID][side]
+	if !ok {
+		existing = domain.Position{
+			MarketID:         fill.MarketID,
+			Side:             side,
+			OpenedAt:         fill.Timestamp,
+			HoldToSettlement: true,
+		}
+	}
+
+	fillQty := fill.SizeUSD / fill.Price
+	newQty := existing.Quantity + fillQty
+	if newQty > 0 {
+		existing.AvgEntryPrice = (existing.AvgEntryPrice*existing.Quantity + fill.Price*fillQty) / newQty
+	}
+	existing.Quantity = newQty
+	existing.NotionalUSD += fill.SizeUSD
+
+	s.positions[fill.MarketID][side] = existing
+	s.mu.Unlock()
+
+	return s.repo.SavePosition(ctx, existing)
+}
+
+// RecordPosition overwrites the position for the given market and side.
+// Used for bootstrap loading and paper mode.
 func (s *PositionService) RecordPosition(ctx context.Context, p domain.Position) error {
 	s.mu.Lock()
 	if s.positions[p.MarketID] == nil {
@@ -101,4 +138,13 @@ func (s *PositionService) RecordPosition(ctx context.Context, p domain.Position)
 	s.mu.Unlock()
 
 	return s.repo.SavePosition(ctx, p)
+}
+
+func fillSideToPositionSide(side domain.TradeSignalSide) domain.PositionSide {
+	switch side {
+	case domain.SignalBuyUp, domain.SignalHedgeUp:
+		return domain.PositionUp
+	default:
+		return domain.PositionDown
+	}
 }

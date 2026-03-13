@@ -22,6 +22,7 @@ type App struct {
 	MarketData     ports.MarketDataProvider
 	RefPriceStream ports.ReferencePriceProvider
 	PriceTracker   *tracker.PriceTracker
+	FillListener   ports.FillListener // nil in paper mode
 	Logger         *slog.Logger
 }
 
@@ -37,6 +38,19 @@ func (a *App) Run(ctx context.Context) error {
 		"asset", a.Config.Asset,
 		"bankroll", a.Config.BankrollUSD,
 	)
+
+	// Bootstrap: load existing positions from Polymarket API (live mode only).
+	// This must happen after market lifecycle resolves the first market so that
+	// token IDs are in the registry. We start it after a short delay below.
+	if a.FillListener != nil {
+		go func() {
+			// Wait briefly for market lifecycle to populate the registry
+			time.Sleep(8 * time.Second)
+			if err := a.FillListener.LoadPositionsFromAPI(ctx); err != nil {
+				a.Logger.Warn("failed to bootstrap positions from API", "error", err)
+			}
+		}()
+	}
 
 	repriceCh := make(chan domain.RepriceEvent, 1024)
 
@@ -54,6 +68,11 @@ func (a *App) Run(ctx context.Context) error {
 
 	// Price tracker: log model vs market prices every second
 	go a.PriceTracker.Run(ctx)
+
+	// Fill listener: subscribe to Polymarket user WS for trade confirmations (live mode)
+	if a.FillListener != nil {
+		go a.FillListener.Run(ctx)
+	}
 
 	// Single reprice loop — one market, one asset, CPU-bound evaluation
 	a.repriceLoop(ctx, repriceCh)
