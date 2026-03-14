@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chart a single market session: trades, inventory imbalance, and pricing."""
+"""Chart a single market session: trades, inventory imbalance, pricing, and drift."""
 import json
 import sys
 import matplotlib.pyplot as plt
@@ -46,32 +46,12 @@ def chart(path, out_path=None):
     imbalance = [t["up_qty"] - t["down_qty"] for t in ticks]
     floor = [t["guaranteed_floor"] for t in ticks]
 
-    # Find trade points
-    buy_up_ts, buy_up_price, buy_up_qty = [], [], []
-    buy_down_ts, buy_down_price, buy_down_qty = [], [], []
-    hedge_up_ts, hedge_up_price = [], []
-    hedge_down_ts, hedge_down_price = [], []
+    # Drift (new fields — may not exist in old logs)
+    has_drift = "drift_delta_z" in ticks[0] and any(t.get("drift_delta_z", 0) != 0 for t in ticks)
+    drift_dz = [t.get("drift_delta_z", 0) for t in ticks]
+    drift_ps = [t.get("drift_per_sec", 0) for t in ticks]
 
-    for i, t in enumerate(ticks):
-        action = t.get("action", "no_trade")
-        if action == "no_trade":
-            continue
-        time_pt = ts[i]
-        if "hedge" in action:
-            if "up" in action.lower() or "UP" in action:
-                hedge_up_ts.append(time_pt)
-                hedge_up_price.append(t["up_ask"])
-            else:
-                hedge_down_ts.append(time_pt)
-                hedge_down_price.append(t["down_ask"])
-        elif "buy_up" in action:
-            buy_up_ts.append(time_pt)
-            buy_up_price.append(t["up_ask"])
-        elif "buy_down" in action:
-            buy_down_ts.append(time_pt)
-            buy_down_price.append(t["down_ask"])
-
-    # Also detect trades by inventory changes
+    # Detect trades by inventory changes
     trade_ts, trade_side, trade_shares = [], [], []
     for i in range(1, len(ticks)):
         du = ticks[i]["up_qty"] - ticks[i-1]["up_qty"]
@@ -85,8 +65,10 @@ def chart(path, out_path=None):
             trade_side.append("DOWN")
             trade_shares.append(dd)
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True,
-                              gridspec_kw={"height_ratios": [3, 2, 2, 1]})
+    n_panels = 5 if has_drift else 4
+    ratios = [3, 2, 2, 1.5, 1] if has_drift else [3, 2, 2, 1]
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 14 if has_drift else 12),
+                              sharex=True, gridspec_kw={"height_ratios": ratios})
 
     slug = path.split("prices_")[-1].replace(".json", "")
     fig.suptitle(f"Market: {slug}", fontsize=14, fontweight="bold")
@@ -99,7 +81,7 @@ def chart(path, out_path=None):
     ax1.plot(ts, [1 - d for d in down_ask], color="red", linewidth=1, alpha=0.7, label="1 - down_ask")
 
     # Mark trades
-    for i, (t_ts, t_side, t_sh) in enumerate(zip(trade_ts, trade_side, trade_shares)):
+    for t_ts, t_side, t_sh in zip(trade_ts, trade_side, trade_shares):
         color = "green" if t_side == "UP" else "red"
         marker = "^" if t_side == "UP" else "v"
         ax1.axvline(t_ts, color=color, alpha=0.3, linewidth=0.8)
@@ -118,10 +100,8 @@ def chart(path, out_path=None):
     ax2.fill_between(ts, 0, [min(u, d) for u, d in zip(up_qty, down_qty)],
                      alpha=0.2, color="gray", label="balanced (hedged)")
 
-    # Mark trades with annotations
     for t_ts, t_side, t_sh in zip(trade_ts, trade_side, trade_shares):
         color = "green" if t_side == "UP" else "red"
-        marker = "^" if t_side == "UP" else "v"
         y = max(up_qty) * 0.9 if t_side == "UP" else max(down_qty) * 0.9 if down_qty else 0
         ax2.annotate(f"+{t_sh:.0f}{t_side[0]}", xy=(t_ts, 0), fontsize=7,
                     color=color, rotation=90, va="bottom")
@@ -131,9 +111,8 @@ def chart(path, out_path=None):
     ax2.set_title("Inventory (UP vs DOWN shares)")
     ax2.grid(True, alpha=0.3)
 
-    # --- Panel 3: Imbalance + Floor ---
+    # --- Panel 3: Imbalance ---
     ax3 = axes[2]
-    colors = ["green" if v >= 0 else "red" for v in imbalance]
     ax3.fill_between(ts, 0, imbalance, where=[v >= 0 for v in imbalance],
                      color="green", alpha=0.3, label="Long UP")
     ax3.fill_between(ts, 0, imbalance, where=[v < 0 for v in imbalance],
@@ -145,19 +124,41 @@ def chart(path, out_path=None):
     ax3.set_title("Inventory Imbalance")
     ax3.grid(True, alpha=0.3)
 
-    # --- Panel 4: Guaranteed Floor ---
-    ax4 = axes[3]
-    ax4.plot(ts, floor, color="purple", linewidth=1.5)
-    ax4.fill_between(ts, 0, floor, where=[f >= 0 for f in floor],
-                     color="green", alpha=0.2)
-    ax4.fill_between(ts, 0, floor, where=[f < 0 for f in floor],
-                     color="red", alpha=0.2)
-    ax4.axhline(0, color="black", linewidth=0.5, linestyle="--")
-    ax4.set_ylabel("Floor ($)")
-    ax4.set_title("Guaranteed Floor (G)")
-    ax4.grid(True, alpha=0.3)
+    # --- Panel 4: Drift delta_z (NEW) ---
+    if has_drift:
+        ax_drift = axes[3]
+        ax_drift.fill_between(ts, 0, drift_dz, where=[v >= 0 for v in drift_dz],
+                             color="green", alpha=0.4, label="Bullish drift")
+        ax_drift.fill_between(ts, 0, drift_dz, where=[v < 0 for v in drift_dz],
+                             color="red", alpha=0.4, label="Bearish drift")
+        ax_drift.plot(ts, drift_dz, color="black", linewidth=0.8)
+        ax_drift.axhline(0, color="black", linewidth=0.5, linestyle="--")
+        ax_drift.axhline(0.5, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
+        ax_drift.axhline(-0.5, color="gray", linewidth=0.5, linestyle=":", alpha=0.5)
 
-    ax4.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+        # Mark trades on drift panel too
+        for t_ts, t_side, t_sh in zip(trade_ts, trade_side, trade_shares):
+            color = "green" if t_side == "UP" else "red"
+            ax_drift.axvline(t_ts, color=color, alpha=0.3, linewidth=0.8)
+
+        ax_drift.set_ylabel("drift_delta_z")
+        ax_drift.legend(loc="upper left", fontsize=8)
+        ax_drift.set_title("EWMA Drift (z-score shift, cap ±0.5)")
+        ax_drift.grid(True, alpha=0.3)
+
+    # --- Panel 5 (or 4): Guaranteed Floor ---
+    ax_floor = axes[-1]
+    ax_floor.plot(ts, floor, color="purple", linewidth=1.5)
+    ax_floor.fill_between(ts, 0, floor, where=[f >= 0 for f in floor],
+                     color="green", alpha=0.2)
+    ax_floor.fill_between(ts, 0, floor, where=[f < 0 for f in floor],
+                     color="red", alpha=0.2)
+    ax_floor.axhline(0, color="black", linewidth=0.5, linestyle="--")
+    ax_floor.set_ylabel("Floor ($)")
+    ax_floor.set_title("Guaranteed Floor (G)")
+    ax_floor.grid(True, alpha=0.3)
+
+    ax_floor.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
     plt.xticks(rotation=45)
 
     plt.tight_layout()
@@ -169,11 +170,11 @@ def chart(path, out_path=None):
     plt.close()
 
 if __name__ == "__main__":
-    import glob
     log_dir = "/Users/alimohammad/GolandProjects/Polybot/logs"
-    # Chart the most recent full markets
-    files = sorted(glob.glob(f"{log_dir}/prices_btc-updown-5m-17734*.json"))
-    # Get the ones from the latest session (19:14+)
-    recent = [f for f in files if "1773425700" <= f.split("1773")[1].split(".")[0] <= "1773426900"]
-    for f in recent:
+    # Chart the two most recent drift-active sessions
+    files = [
+        f"{log_dir}/prices_btc-updown-5m-1773438600.json",
+        f"{log_dir}/prices_btc-updown-5m-1773438900.json",
+    ]
+    for f in files:
         chart(f)

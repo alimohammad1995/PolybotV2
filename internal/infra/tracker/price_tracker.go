@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -38,6 +39,10 @@ type FullTickSnapshot struct {
 	GuaranteedFloor  float64 `json:"guaranteed_floor"`
 	HedgeEdgeBuyDown float64 `json:"hedge_edge_buy_down"`
 	HedgeEdgeBuyUp   float64 `json:"hedge_edge_buy_up"`
+	DriftPerSec      float64 `json:"drift_per_sec"`
+	DriftDeltaZ      float64 `json:"drift_delta_z"`
+	DriftTicks       int     `json:"drift_ticks"`
+	Regime           string  `json:"regime"`
 	Action           string  `json:"action"`
 }
 
@@ -48,6 +53,7 @@ type PriceTracker struct {
 	positionSvc  *service.PositionService
 	hedgeEngine  *service.HedgeEngine
 	logDir       string
+	interval     time.Duration
 	logger       *slog.Logger
 }
 
@@ -58,8 +64,13 @@ func NewPriceTracker(
 	positionSvc *service.PositionService,
 	hedgeEngine *service.HedgeEngine,
 	logDir string,
+	intervalMs int,
 	logger *slog.Logger,
 ) *PriceTracker {
+	interval := time.Duration(intervalMs) * time.Millisecond
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
 	return &PriceTracker{
 		registry:     registry,
 		refAnalytics: refAnalytics,
@@ -67,12 +78,13 @@ func NewPriceTracker(
 		positionSvc:  positionSvc,
 		hedgeEngine:  hedgeEngine,
 		logDir:       logDir,
+		interval:     interval,
 		logger:       logger,
 	}
 }
 
 func (t *PriceTracker) Run(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(t.interval)
 	defer ticker.Stop()
 
 	var (
@@ -135,6 +147,8 @@ func (t *PriceTracker) Run(ctx context.Context) {
 				RealizedVol5m:    refState.RealizedVol5m,
 				JumpScore:        refState.JumpScore,
 				Regime:           refState.Regime,
+				DriftPerSec:      refState.DriftPerSec,
+				DriftTicks:       refState.DriftTicks,
 			})
 			if err != nil {
 				continue
@@ -153,6 +167,21 @@ func (t *PriceTracker) Run(ctx context.Context) {
 			}
 			if t.hedgeEngine != nil {
 				hedgeEdgeBuyUp, hedgeEdgeBuyDown, floor = t.hedgeEngine.ComputeHedgeEdges(ctx, market.ID, &quote)
+			}
+
+			// Compute drift delta_z for logging
+			var driftDeltaZ float64
+			if refState.DriftTicks >= 5 && refState.Regime != "jump" && fv.SigmaTau > 0 {
+				const driftHL = 10.0
+				lam := math.Ln2 / driftHL
+				effT := (1.0 / lam) * (1.0 - math.Exp(-lam*remaining))
+				dz := refState.DriftPerSec * effT / fv.SigmaTau
+				if dz > 0.5 {
+					dz = 0.5
+				} else if dz < -0.5 {
+					dz = -0.5
+				}
+				driftDeltaZ = dz
 			}
 
 			// Determine action label
@@ -191,6 +220,10 @@ func (t *PriceTracker) Run(ctx context.Context) {
 				GuaranteedFloor:  floor,
 				HedgeEdgeBuyDown: hedgeEdgeBuyDown,
 				HedgeEdgeBuyUp:   hedgeEdgeBuyUp,
+				DriftPerSec:      refState.DriftPerSec,
+				DriftDeltaZ:      driftDeltaZ,
+				DriftTicks:       refState.DriftTicks,
+				Regime:           refState.Regime,
 				Action:           action,
 			}
 

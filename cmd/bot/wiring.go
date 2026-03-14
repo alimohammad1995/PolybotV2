@@ -52,6 +52,9 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		FractionalKelly:         cfg.FractionalKelly,
 		MinTradeSizeUSD:         cfg.MinTradeSizeUSD,
 		MinTradeShares:          cfg.MinTradeShares,
+		MaxImbalanceShares:      cfg.MaxImbalanceShares,
+		MinGuaranteedFloor:      cfg.MinGuaranteedFloor,
+		MaxWorstCaseLoss:        cfg.MaxWorstCaseLoss,
 	})
 
 	clobClient := buildClobClient(cfg, logger)
@@ -73,6 +76,11 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 			MaxQuoteAge:      cfg.MaxQuoteAge,
 			MaxAllowedSpread: cfg.MaxAllowedSpread,
 			MinTickCount:     cfg.MinTickCount,
+			HedgeAfterPct:    cfg.HedgeAfterPct,
+		},
+		service.ImbalancePenaltyConfig{
+			Alpha: cfg.ImbalanceAlpha,
+			Beta:  cfg.ImbalanceBeta,
 		},
 		logger,
 	)
@@ -100,7 +108,7 @@ func buildApp(cfg *config.Config, refStream *infraChainlink.Stream, logger *slog
 		Runner:         runner,
 		MarketData:     marketData,
 		RefPriceStream: refStream,
-		PriceTracker:   tracker.NewPriceTracker(registry, refAnalytics, pricingModel, positionSvc, hedgeEngine, "logs", logger),
+		PriceTracker:   tracker.NewPriceTracker(registry, refAnalytics, pricingModel, positionSvc, hedgeEngine, "logs", cfg.TrackerIntervalMs, logger),
 		FillListener:   fillListener,
 		Logger:         logger,
 	}

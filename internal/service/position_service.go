@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 	"sync"
 
 	"Polybot/internal/domain"
@@ -60,19 +61,36 @@ func (s *PositionService) GetTotalExposure() float64 {
 	return total
 }
 
-func (s *PositionService) GetInventoryPenalty(marketID domain.MarketID) float64 {
+// ImbalancePenaltyConfig holds the exponential penalty parameters.
+type ImbalancePenaltyConfig struct {
+	Alpha float64 // base penalty scale (default 0.005)
+	Beta  float64 // exponential growth rate (default 0.15)
+}
+
+// GetInventoryPenalties returns per-side penalties for directional trading.
+// Buying the heavy side gets an exponential penalty; buying the light side gets zero.
+func (s *PositionService) GetInventoryPenalties(marketID domain.MarketID, cfg ImbalancePenaltyConfig) (penaltyBuyUp, penaltyBuyDown float64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sides := s.positions[marketID]
 	if len(sides) == 0 {
-		return 0
+		return 0, 0
 	}
-	// Penalize adding to existing positions
-	var total float64
-	for _, p := range sides {
-		total += p.NotionalUSD
+
+	upQty := sides[domain.PositionUp].Quantity
+	downQty := sides[domain.PositionDown].Quantity
+	imbalance := math.Abs(upQty - downQty)
+
+	penalty := cfg.Alpha * (math.Exp(cfg.Beta*imbalance) - 1)
+
+	if upQty > downQty {
+		// UP is heavy — penalize buying more UP, reward buying DOWN
+		return penalty, 0
+	} else if downQty > upQty {
+		// DOWN is heavy — penalize buying more DOWN, reward buying UP
+		return 0, penalty
 	}
-	return total * 0.001 // 0.1% penalty per dollar of existing exposure
+	return 0, 0
 }
 
 // GetInventory returns the quantity and total cost for UP and DOWN positions on a market.

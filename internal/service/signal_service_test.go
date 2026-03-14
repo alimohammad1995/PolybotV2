@@ -40,7 +40,7 @@ func TestSignalService_Generate(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 
-		sig, err := svc.Generate(ctx, &fv, &quote, 0.0)
+		sig, err := svc.Generate(ctx, &fv, &quote, 0.0, 0.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -76,7 +76,7 @@ func TestSignalService_Generate(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 
-		sig, err := svc.Generate(ctx, &fv, &quote, 0.0)
+		sig, err := svc.Generate(ctx, &fv, &quote, 0.0, 0.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestSignalService_Generate(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 
-		sig, err := svc.Generate(ctx, &fv, &quote, 0.0)
+		sig, err := svc.Generate(ctx, &fv, &quote, 0.0, 0.0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -147,7 +147,7 @@ func TestSignalService_Generate(t *testing.T) {
 		// edgeBuyUp = 0.66 - 0.60 - 0.01 = 0.05
 		// With inventoryPenalty = 0.10, effective hurdle = 0.02 + 0.10 = 0.12
 		// 0.05 < 0.12, so blocked
-		sig, err := svc.Generate(ctx, &fv, &quote, 0.10)
+		sig, err := svc.Generate(ctx, &fv, &quote, 0.10, 0.10)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -182,8 +182,8 @@ func TestSignalService_Generate(t *testing.T) {
 			Timestamp: time.Now(),
 		}
 
-		sigLow, _ := lowCost.Generate(ctx, &fv, &quote, 0.0)
-		sigHigh, _ := highCost.Generate(ctx, &fv, &quote, 0.0)
+		sigLow, _ := lowCost.Generate(ctx, &fv, &quote, 0.0, 0.0)
+		sigHigh, _ := highCost.Generate(ctx, &fv, &quote, 0.0, 0.0)
 
 		// Low cost: edgeBuyUp = 0.68 - 0.55 - 0.00 = 0.13 (signal)
 		// High cost: edgeBuyUp = 0.68 - 0.55 - 0.10 = 0.03 (< 0.05 hurdle, no signal)

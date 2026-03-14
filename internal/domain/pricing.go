@@ -30,6 +30,8 @@ type PricingInput struct {
 	RealizedVol5m    float64
 	JumpScore        float64
 	Regime           string
+	DriftPerSec      float64 // EWMA short-term drift (per-second log return)
+	DriftTicks       int     // ticks contributing to drift estimate
 }
 
 type ReferenceSnapshot struct {
@@ -56,6 +58,8 @@ type ReferenceState struct {
 	JumpScore         float64
 	Regime            string
 	TickCount         int
+	DriftPerSec       float64 // EWMA of per-second log returns (short-term momentum)
+	DriftTicks        int     // number of nonzero-return ticks contributing to drift
 	LastUpdate        time.Time
 }
 

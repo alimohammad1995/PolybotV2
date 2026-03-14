@@ -22,6 +22,10 @@ type ReferenceAnalyticsService struct {
 	states   map[string]domain.ReferenceState
 	maxTicks int
 
+	// EWMA drift state per asset
+	drift      map[string]float64 // current EWMA of per-second log returns
+	driftTicks map[string]int     // count of nonzero-return ticks seen
+
 	// Jump detection threshold: if |log return| > this, it's a jump
 	jumpThresholdMultiple float64
 }
@@ -31,6 +35,8 @@ func NewReferenceAnalyticsService(maxTicks int) *ReferenceAnalyticsService {
 		ticks:                 make(map[string][]tickRecord),
 		states:                make(map[string]domain.ReferenceState),
 		maxTicks:              maxTicks,
+		drift:                 make(map[string]float64),
+		driftTicks:            make(map[string]int),
 		jumpThresholdMultiple: 4.0, // 4 sigma
 	}
 }
@@ -42,11 +48,13 @@ func (s *ReferenceAnalyticsService) OnTick(tick domain.ChainlinkTick) {
 	records := s.ticks[tick.Asset]
 
 	var lr float64
+	var dt float64
 	if len(records) > 0 {
 		prev := records[len(records)-1]
 		if prev.Price > 0 && tick.Price > 0 {
 			lr = math.Log(tick.Price / prev.Price)
 		}
+		dt = tick.Timestamp.Sub(prev.Timestamp).Seconds()
 	}
 
 	records = append(records, tickRecord{
@@ -61,13 +69,24 @@ func (s *ReferenceAnalyticsService) OnTick(tick domain.ChainlinkTick) {
 	}
 	s.ticks[tick.Asset] = records
 
+	// Update EWMA drift: only on real price changes with valid time intervals
+	const driftHalflife = 10.0 // seconds
+	if lr != 0 && dt > 0 && dt < 30 {
+		perSecReturn := lr / dt
+		alpha := 1.0 - math.Exp(-dt/driftHalflife)
+		s.drift[tick.Asset] = alpha*perSecReturn + (1-alpha)*s.drift[tick.Asset]
+		s.driftTicks[tick.Asset]++
+	}
+	currentDrift := s.drift[tick.Asset]
+	currentDriftTicks := s.driftTicks[tick.Asset]
+
 	// Copy records for computation outside lock
 	recordsCopy := make([]tickRecord, len(records))
 	copy(recordsCopy, records)
 	s.mu.Unlock()
 
 	// Compute state without holding the lock (expensive: vol windows, jump score)
-	state := s.computeState(tick.Asset, recordsCopy)
+	state := s.computeState(tick.Asset, recordsCopy, currentDrift, currentDriftTicks)
 
 	s.mu.Lock()
 	s.states[tick.Asset] = state
@@ -82,7 +101,7 @@ func (s *ReferenceAnalyticsService) GetState(asset string) (domain.ReferenceStat
 	return state, ok
 }
 
-func (s *ReferenceAnalyticsService) computeState(asset string, records []tickRecord) domain.ReferenceState {
+func (s *ReferenceAnalyticsService) computeState(asset string, records []tickRecord, drift float64, driftTicks int) domain.ReferenceState {
 	if len(records) == 0 {
 		return domain.ReferenceState{Asset: asset, Regime: "unknown"}
 	}
@@ -92,6 +111,8 @@ func (s *ReferenceAnalyticsService) computeState(asset string, records []tickRec
 		Asset:        asset,
 		CurrentPrice: latest.Price,
 		TickCount:    len(records),
+		DriftPerSec:  drift,
+		DriftTicks:   driftTicks,
 		LastUpdate:   latest.Timestamp,
 	}
 

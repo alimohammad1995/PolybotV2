@@ -18,6 +18,7 @@ type FreshnessConfig struct {
 	MaxQuoteAge      time.Duration
 	MaxAllowedSpread float64
 	MinTickCount     int
+	HedgeAfterPct    float64 // fraction of market elapsed before hedging (0.70 = last 30%)
 }
 
 type StrategyRunner struct {
@@ -31,6 +32,7 @@ type StrategyRunner struct {
 	EventRepo         ports.EventRepository
 	Clock             ports.Clock
 	Freshness         FreshnessConfig
+	ImbalanceCfg      service.ImbalancePenaltyConfig
 	Logger            *slog.Logger
 
 	lastTradeTime time.Time // cooldown: prevent rapid-fire trades on buffered events
@@ -47,6 +49,7 @@ func NewStrategyRunner(
 	eventRepo ports.EventRepository,
 	clock ports.Clock,
 	freshness FreshnessConfig,
+	imbalanceCfg service.ImbalancePenaltyConfig,
 	logger *slog.Logger,
 ) *StrategyRunner {
 	return &StrategyRunner{
@@ -60,6 +63,7 @@ func NewStrategyRunner(
 		EventRepo:         eventRepo,
 		Clock:             clock,
 		Freshness:         freshness,
+		ImbalanceCfg:      imbalanceCfg,
 		Logger:            logger,
 	}
 }
@@ -115,7 +119,7 @@ func (r *StrategyRunner) EvaluateMarket(
 
 	// === SAFETY GUARD: jump rejection ===
 	if refState.JumpScore > 6.0 {
-		r.Logger.Info("rejecting due to extreme jump",
+		r.Logger.Debug("rejecting due to extreme jump",
 			"market", market.ID,
 			"jump_score", refState.JumpScore,
 		)
@@ -146,6 +150,8 @@ func (r *StrategyRunner) EvaluateMarket(
 		RealizedVol5m:    refState.RealizedVol5m,
 		JumpScore:        refState.JumpScore,
 		Regime:           refState.Regime,
+		DriftPerSec:      refState.DriftPerSec,
+		DriftTicks:       refState.DriftTicks,
 	}
 
 	fv, err := r.PricingModel.FairProbUp(ctx, pricingInput)
@@ -166,7 +172,7 @@ func (r *StrategyRunner) EvaluateMarket(
 	_ = r.EventRepo.SaveQuote(ctx, quote)
 
 	// === SELECTOR: hedge > directional > no trade ===
-	signal := r.selectSignal(ctx, market, &fv, &quote)
+	signal := r.selectSignal(ctx, market, &fv, &quote, remaining)
 	_ = r.EventRepo.SaveSignal(ctx, signal)
 
 	if signal.Side == domain.SignalNone {
@@ -187,14 +193,25 @@ func (r *StrategyRunner) EvaluateMarket(
 }
 
 // selectSignal implements the decision priority: hedge > directional > no trade.
+// Hedging is time-gated: only allowed after HedgeAfterPct of the market has elapsed.
 func (r *StrategyRunner) selectSignal(
 	ctx context.Context,
 	market *domain.BinaryMarket,
 	fv *domain.FairValue,
 	quote *domain.MarketQuote,
+	remainingSeconds float64,
 ) domain.TradeSignal {
-	// Priority 1: hedge trade (monetize existing inventory)
-	if r.HedgeEngine != nil {
+	// Priority 1: hedge trade (time-gated — hold directional exposure early)
+	if r.HedgeEngine != nil && r.Freshness.HedgeAfterPct > 0 {
+		totalDuration := market.EndTime.Sub(market.StartTime).Seconds()
+		elapsedPct := 1.0 - remainingSeconds/totalDuration
+		if totalDuration > 0 && elapsedPct >= r.Freshness.HedgeAfterPct {
+			hedgeSignal, err := r.HedgeEngine.Evaluate(ctx, market.ID, quote)
+			if err == nil && hedgeSignal.Side != domain.SignalNone {
+				return hedgeSignal
+			}
+		}
+	} else if r.HedgeEngine != nil {
 		hedgeSignal, err := r.HedgeEngine.Evaluate(ctx, market.ID, quote)
 		if err == nil && hedgeSignal.Side != domain.SignalNone {
 			return hedgeSignal
@@ -202,8 +219,8 @@ func (r *StrategyRunner) selectSignal(
 	}
 
 	// Priority 2: directional trade
-	inventoryPenalty := r.PositionSvc.GetInventoryPenalty(market.ID)
-	dirSignal, err := r.SignalSvc.Generate(ctx, fv, quote, inventoryPenalty)
+	penaltyUp, penaltyDown := r.PositionSvc.GetInventoryPenalties(market.ID, r.ImbalanceCfg)
+	dirSignal, err := r.SignalSvc.Generate(ctx, fv, quote, penaltyUp, penaltyDown)
 	if err != nil {
 		r.Logger.Warn("signal generation error", "market", market.ID, "error", err)
 		return domain.TradeSignal{
@@ -229,6 +246,7 @@ func (r *StrategyRunner) executeSignal(
 
 	var edge float64
 	var maxPrice float64
+	var buyingUp bool
 
 	switch signal.Side {
 	case domain.SignalBuyUp, domain.SignalHedgeUp:
@@ -237,19 +255,44 @@ func (r *StrategyRunner) executeSignal(
 			edge = signal.HedgeEdge
 		}
 		maxPrice = mktState.UpAsk
+		buyingUp = true
 	case domain.SignalBuyDown, domain.SignalHedgeDown:
 		edge = signal.EdgeBuyDown
 		if signal.SignalType == "hedge" {
 			edge = signal.HedgeEdge
 		}
 		maxPrice = mktState.DownAsk
+		buyingUp = false
 	default:
 		return nil
 	}
 
-	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure, maxPrice)
+	// Compute imbalance ratio for Kelly decay
+	upQty, downQty, upCost, downCost := r.PositionSvc.GetInventory(market.ID)
+	total := upQty + downQty
+	imbalance := math.Abs(upQty - downQty)
+	imbalanceRatio := 0.0
+	if total > 0 {
+		imbalanceRatio = imbalance / total
+	}
+	increasingImbalance := (buyingUp && upQty > downQty) || (!buyingUp && downQty > upQty)
+
+	sizeUSD := r.RiskSvc.ComputeTargetSizeUSD(edge, bankrollUSD, currentExposure, maxPrice, imbalanceRatio, increasingImbalance)
 	if sizeUSD <= 0 {
 		return nil
+	}
+
+	// Pre-trade risk gates: imbalance, floor, worst-case loss
+	if maxPrice > 0 {
+		proposedShares := math.Floor(sizeUSD / maxPrice)
+		if reason := r.RiskSvc.PreTradeCheck(buyingUp, proposedShares, maxPrice, upQty, downQty, upCost, downCost); reason != "" {
+			r.Logger.Debug("trade blocked by risk gate",
+				"market", market.ID,
+				"side", signal.Side,
+				"reason", reason,
+			)
+			return nil
+		}
 	}
 
 	// Hedge trades: cap at the number of shares needed to balance inventory.

@@ -84,6 +84,23 @@ func (m *DynamicGaussianModel) FairProbUp(_ context.Context, in domain.PricingIn
 	// p_up = Φ(log(S/K) / σ̂_τ)
 	z := logMoneyness / horizonStd
 
+	// Drift adjustment: incorporate short-term momentum via EWMA drift.
+	// The drift decays over the horizon (autocorrelation halflife ~10s),
+	// so we use effective_T = (1/λ)(1 - e^{-λT}) instead of raw T.
+	if in.DriftTicks >= 5 && in.Regime != "jump" {
+		const driftHalflife = 10.0         // seconds — matches EWMA estimation window
+		lambda := math.Ln2 / driftHalflife // mean-reversion rate
+		effectiveT := (1.0 / lambda) * (1.0 - math.Exp(-lambda*in.RemainingSeconds))
+		deltaZ := in.DriftPerSec * effectiveT / horizonStd
+		// Cap drift influence: prevent momentum from dominating the model
+		if deltaZ > 0.5 {
+			deltaZ = 0.5
+		} else if deltaZ < -0.5 {
+			deltaZ = -0.5
+		}
+		z += deltaZ
+	}
+
 	// Clamp z to [-3, +3]: for 5-minute binaries there is always meaningful
 	// uncertainty. Unclamped z reached 41.9 in production, giving p_raw ≈ 1.0.
 	if z > 3.0 {

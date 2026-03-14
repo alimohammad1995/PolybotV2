@@ -45,7 +45,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 			MinTradeShares:          5,
 		})
 
-		size := svc.ComputeTargetSizeUSD(-0.05, 10000, 0, price)
+		size := svc.ComputeTargetSizeUSD(-0.05, 10000, 0, price, 0, false)
 		if size != 0 {
 			t.Errorf("expected 0 for negative edge, got %f", size)
 		}
@@ -59,7 +59,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 			MinTradeShares:          5,
 		})
 
-		size := svc.ComputeTargetSizeUSD(0, 10000, 0, price)
+		size := svc.ComputeTargetSizeUSD(0, 10000, 0, price, 0, false)
 		if size != 0 {
 			t.Errorf("expected 0 for zero edge, got %f", size)
 		}
@@ -77,7 +77,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 		// Capped at maxRemaining = 100
 		// shares = floor(100 / 0.50) = 200
 		// result = 200 * 0.50 = 100
-		size := svc.ComputeTargetSizeUSD(0.10, 100000, 0, price)
+		size := svc.ComputeTargetSizeUSD(0.10, 100000, 0, price, 0, false)
 		if size != 100 {
 			t.Errorf("expected size capped at 100, got %f", size)
 		}
@@ -94,7 +94,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 		// maxRemaining = 100 - 80 = 20
 		// shares = floor(20 / 0.50) = 40
 		// result = 40 * 0.50 = 20
-		size := svc.ComputeTargetSizeUSD(0.10, 100000, 80, price)
+		size := svc.ComputeTargetSizeUSD(0.10, 100000, 80, price, 0, false)
 		if size != 20 {
 			t.Errorf("expected size capped at 20, got %f", size)
 		}
@@ -109,7 +109,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 		})
 
 		// raw size = 100 * 0.25 * 0.001 * 10 = 0.25 < 50 min => 0
-		size := svc.ComputeTargetSizeUSD(0.001, 100, 0, price)
+		size := svc.ComputeTargetSizeUSD(0.001, 100, 0, price, 0, false)
 		if size != 0 {
 			t.Errorf("expected 0 when below min trade size, got %f", size)
 		}
@@ -125,7 +125,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 
 		// raw size = 100 * 0.25 * 0.001 * 10 = 0.25 USD
 		// shares = floor(0.25 / 0.50) = 0 < 5 min shares => 0
-		size := svc.ComputeTargetSizeUSD(0.001, 100, 0, price)
+		size := svc.ComputeTargetSizeUSD(0.001, 100, 0, price, 0, false)
 		if size != 0 {
 			t.Errorf("expected 0 when below min shares, got %f", size)
 		}
@@ -142,7 +142,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 		// raw size = 5000 * 0.25 * 0.05 * 10 = 625 USD
 		// shares = floor(625 / 0.50) = 1250
 		// result = 1250 * 0.50 = 625 (already whole shares at this price)
-		size := svc.ComputeTargetSizeUSD(0.05, 5000, 0, price)
+		size := svc.ComputeTargetSizeUSD(0.05, 5000, 0, price, 0, false)
 		expected := 625.0
 		if size != expected {
 			t.Errorf("expected size=%f, got %f", expected, size)
@@ -152,7 +152,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 		// raw size = 625 USD, price = 0.30
 		// shares = floor(625 / 0.30) = floor(2083.33) = 2083
 		// result = 2083 * 0.30 = 624.9
-		size2 := svc.ComputeTargetSizeUSD(0.05, 5000, 0, 0.30)
+		size2 := svc.ComputeTargetSizeUSD(0.05, 5000, 0, 0.30, 0, false)
 		expectedShares := math.Floor(625.0 / 0.30)
 		expected2 := expectedShares * 0.30
 		if math.Abs(size2-expected2) > 0.001 {
@@ -168,7 +168,7 @@ func TestRiskService_ComputeTargetSizeUSD(t *testing.T) {
 			MinTradeShares:          5,
 		})
 
-		size := svc.ComputeTargetSizeUSD(0.05, 10000, 0, 0)
+		size := svc.ComputeTargetSizeUSD(0.05, 10000, 0, 0, 0, false)
 		if size != 0 {
 			t.Errorf("expected 0 for zero price, got %f", size)
 		}
